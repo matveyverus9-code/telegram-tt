@@ -31,11 +31,16 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - name: Install dependencies
-        run: npm install
+      - name: Configure GitHub HTTPS for Git dependencies
+        run: |
+          git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+          git config --global --add url."https://github.com/".insteadOf "git@github.com:"
+
+      - name: Install project dependencies
+        run: npm install --allow-git=all
 
       - name: Install Capacitor
-        run: npm install --no-save @capacitor/cli@^8 @capacitor/core@^8 @capacitor/android@^8
+        run: npm install --no-save --allow-git=all @capacitor/cli@^8 @capacitor/core@^8 @capacitor/android@^8
 
       - name: Build web application
         run: npm run build:production
@@ -75,11 +80,16 @@ jobs:
           node-version: "24.15.0"
           cache: npm
 
-      - name: Install dependencies
-        run: npm install
+      - name: Configure GitHub HTTPS for Git dependencies
+        run: |
+          git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+          git config --global --add url."https://github.com/".insteadOf "git@github.com:"
+
+      - name: Install project dependencies
+        run: npm install --allow-git=all
 
       - name: Install Capacitor
-        run: npm install --no-save @capacitor/cli@^8 @capacitor/core@^8 @capacitor/ios@^8
+        run: npm install --no-save --allow-git=all @capacitor/cli@^8 @capacitor/core@^8 @capacitor/ios@^8
 
       - name: Build web application
         run: npm run build:production
