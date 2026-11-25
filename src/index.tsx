@@ -53,12 +53,31 @@ const initializationPromise = init();
 
 async function init() {
   await webLoginHandoffPromise;
+
   if (DEBUG) {
     // eslint-disable-next-line no-console
     console.log('>>> INIT');
   }
 
   if (!(window as any).isCompatTestPassed) return;
+
+  // NeoGram standalone mode.
+  // When enabled, the original Telegram application is not rendered.
+  const neoGramStarted = await import('./neogram')
+    .then(({ startNeoGram }) => startNeoGram())
+    .catch((error) => {
+      // eslint-disable-next-line no-console
+      console.error('[NeoGram] Startup failed:', error);
+      return false;
+    });
+
+  if (neoGramStarted) {
+    if (DEBUG) {
+      // eslint-disable-next-line no-console
+      console.log('>>> NeoGram started');
+    }
+    return;
+  }
 
   checkAndAssignPermanentWebVersion();
   listenOtherClients();
@@ -68,8 +87,10 @@ async function init() {
   initPasscodeNavigation(getDek, getDekGeneration);
   await requestGlobal(APP_VERSION);
   localStorage.setItem(MULTITAB_STORAGE_KEY, '1');
+
   onBeforeUnload(() => {
     const global = getGlobal();
+
     if (Object.keys(global.byTabId).length === 1) {
       localStorage.removeItem(MULTITAB_STORAGE_KEY);
     }
@@ -91,8 +112,10 @@ async function init() {
     getActions()
       .switchMultitabRole({ isMasterTab }, { forceSyncOnIOs: true });
   });
+
   const shouldReestablishMasterToSelf = Boolean(getPendingWebLogin())
     || getGlobal().auth.state !== 'authorizationStateReady';
+
   establishMultitabRole(shouldReestablishMasterToSelf);
 
   if (DEBUG) {
@@ -120,10 +143,13 @@ async function init() {
     document.addEventListener('dblclick', () => {
       const currentGlobal = getGlobal();
       const currentMessageList = selectCurrentMessageList(currentGlobal);
+
       // eslint-disable-next-line no-console
       console.warn('TAB STATE', selectTabState(currentGlobal));
+
       // eslint-disable-next-line no-console
       console.warn('GLOBAL STATE', currentGlobal);
+
       if (currentMessageList) {
         // eslint-disable-next-line no-console
         console.warn(
