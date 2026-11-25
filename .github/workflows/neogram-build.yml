@@ -1,3 +1,4 @@
+
 name: NeoGram Mobile Build
 
 on:
@@ -30,7 +31,7 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - name: Install project dependencies
+      - name: Install dependencies
         run: npm install
 
       - name: Install Capacitor
@@ -38,11 +39,14 @@ jobs:
 
       - name: Build web application
         run: npm run build:production
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
 
       - name: Add Android platform
         run: npx cap add android
 
-      - name: Sync Android project
+      - name: Sync Android
         run: npx cap sync android
 
       - name: Build APK
@@ -71,7 +75,7 @@ jobs:
           node-version: "24.15.0"
           cache: npm
 
-      - name: Install project dependencies
+      - name: Install dependencies
         run: npm install
 
       - name: Install Capacitor
@@ -79,11 +83,14 @@ jobs:
 
       - name: Build web application
         run: npm run build:production
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
 
       - name: Add iOS platform
         run: npx cap add ios
 
-      - name: Sync iOS project
+      - name: Sync iOS
         run: npx cap sync ios
 
       - name: Build unsigned iOS app
@@ -99,9 +106,8 @@ jobs:
 
       - name: Package unsigned IPA
         run: |
-          mkdir -p Payload
+          mkdir -p Payload artifacts
           cp -R build/ios/Build/Products/Release-iphoneos/App.app Payload/
-          mkdir -p artifacts
           cd Payload
           zip -r ../artifacts/NeoGram-unsigned.ipa .
           cd ..
