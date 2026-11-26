@@ -23,12 +23,6 @@ import renderText from './helpers/renderText';
 import useLang from '../../hooks/useLang';
 import useLastCallback from '../../hooks/useLastCallback';
 
-import {
-  getNeoGramNicknameStyle,
-  getNeoGramVerification,
-  type NeoGramDecoratedPeer,
-} from '../../neogram/player-decorations';
-
 import Marquee from '../ui/Marquee';
 import Transition from '../ui/Transition';
 import CustomEmoji from './CustomEmoji';
@@ -38,6 +32,12 @@ import StarIcon from './icons/StarIcon';
 import VerifiedIcon from './VerifiedIcon';
 
 import styles from './FullNameTitle.module.scss';
+
+import {
+  getNeoGramNicknameStyle,
+  getNeoGramVerification,
+  type NeoGramDecoratedPeer,
+} from '../../neogram/player-decorations';
 
 type OwnProps = {
   peer: ApiPeer | CustomPeer;
@@ -85,12 +85,8 @@ const FullNameTitle = ({
   const { showNotification } = getActions();
 
   const lang = useLang();
-
   const realPeer = 'id' in peer ? peer : undefined;
   const customPeer = 'isCustomPeer' in peer ? peer : undefined;
-
-  const decoratedPeer = peer as typeof peer & NeoGramDecoratedPeer;
-
   const isUser = realPeer && isApiPeerUser(realPeer);
 
   const title = realPeer && (
@@ -100,7 +96,6 @@ const FullNameTitle = ({
   );
 
   const isPremium = (isUser && realPeer.isPremium) || customPeer?.isPremium;
-
   const canShowEmojiStatus = withEmojiStatus && !isSavedMessages;
 
   const emojiStatus = realPeer?.emojiStatus
@@ -108,15 +103,21 @@ const FullNameTitle = ({
       ? { type: 'regular', documentId: customPeer.emojiStatusId }
       : undefined);
 
+  const decoratedPeer = peer as ApiPeer & NeoGramDecoratedPeer;
+
   const neoGramVerified = getNeoGramVerification(decoratedPeer);
 
-  const neoGramNicknameStyle = useMemo(() => {
-    const decoration = getNeoGramNicknameStyle(decoratedPeer);
+  const neoGramNameStyle = useMemo(() => {
+    const properties = getNeoGramNicknameStyle(decoratedPeer);
 
-    return Object.entries(decoration)
+    return Object.entries(properties)
       .map(([key, value]) => {
-        const cssKey = key.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
-        return `${cssKey}:${value}`;
+        const cssProperty = key.replace(
+          /[A-Z]/g,
+          (letter) => `-${letter.toLowerCase()}`,
+        );
+
+        return `${cssProperty}:${value}`;
       })
       .join(';');
   }, [decoratedPeer.neogram]);
@@ -128,7 +129,11 @@ const FullNameTitle = ({
 
     stopEvent(e);
     copyTextToClipboard(title);
-    showNotification({ message: { key: isUser ? 'UserNameCopied' : 'ChatNameCopied' } });
+    showNotification({
+      message: {
+        key: isUser ? 'UserNameCopied' : 'ChatNameCopied',
+      },
+    });
   });
 
   const specialTitle = useMemo(() => {
@@ -164,16 +169,13 @@ const FullNameTitle = ({
     [specialTitle, title],
   );
 
-  const titleStyle = buildStyle(
-    style,
-    neoGramNicknameStyle,
-  );
-
   return (
     <div
       className={buildClassName('title', styles.root, className)}
       style={buildStyle(
         emojiStatusSize ? `--_status-size: ${emojiStatusSize}px` : undefined,
+        neoGramNameStyle,
+        style,
       )}
     >
       {botVerificationIconId && (
@@ -193,11 +195,14 @@ const FullNameTitle = ({
           styles.fullName,
           canCopyTitle && styles.canCopy,
         )}
-        style={titleStyle}
         onClick={handleTitleClick}
       >
         {isScrolling
-          ? <Marquee paused={isScrollingPaused}>{renderedTitle}</Marquee>
+          ? (
+            <Marquee paused={isScrollingPaused}>
+              {renderedTitle}
+            </Marquee>
+          )
           : renderedTitle}
       </h3>
 
@@ -247,7 +252,12 @@ const FullNameTitle = ({
           {canShowEmojiStatus && !emojiStatus && isPremium && <StarIcon />}
 
           {isMonoforum && (
-            <div className={buildClassName(styles.monoforumBadge, monoforumBadgeClassName)}>
+            <div
+              className={buildClassName(
+                styles.monoforumBadge,
+                monoforumBadgeClassName,
+              )}
+            >
               {lang('MonoforumBadge')}
             </div>
           )}
