@@ -183,6 +183,7 @@ async function init() {
 // NEOGRAM MODULE INITIALIZATION
 // --------------------------------------------------
 
+
 async function initializeNeoGramAddon() {
   const root = document.getElementById('root');
 
@@ -192,19 +193,24 @@ async function initializeNeoGramAddon() {
   }
 
   try {
-    // Optional addon module. The original Telegram startup
-    // never depends on successful NeoGram initialization.
-    // @ts-ignore -- NeoGram addon is an optional module.
-    const neoGramModule = await import('./neogram');
+    window.dispatchEvent(
+      new CustomEvent('neogram:telegram-ready', {
+        detail: {
+          root,
+          apiUrl: 'https://tg-api.matveyverus9.workers.dev',
+          isTauri: IS_TAURI,
+        },
+      }),
+    );
 
-    if (typeof neoGramModule.mountNeoGram === 'function') {
-      await neoGramModule.mountNeoGram({
-        root,
-        apiUrl: 'https://tg-api.matveyverus9.workers.dev',
-        isTauri: IS_TAURI,
-      });
+    if (DEBUG) {
+      // eslint-disable-next-line no-console
+      console.log('[NeoGram] Telegram integration ready');
     }
-
+  } catch (error) {
+    console.error('[NeoGram] Initialization failed:', error);
+  }
+}
     // Notify addon integrations that Telegram is ready.
     window.dispatchEvent(
       new CustomEvent('neogram:telegram-ready', {
