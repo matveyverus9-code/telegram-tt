@@ -1,3 +1,4 @@
+
 import { Api as GramJs } from '../../../lib/gramjs';
 
 import type {
@@ -30,6 +31,7 @@ import {
   buildAvatarPhotoId,
 } from './peers';
 import { buildApiWalletCard } from './wallet';
+import { decorateTelegramPeer } from '../../../neogram/player-peer';
 
 export function buildApiUserFullInfo(mtpUserFull: GramJs.users.UserFull): ApiUserFullInfo {
   const {
@@ -140,7 +142,7 @@ export function buildApiUser(mtpUser: GramJs.TypeUser): ApiUser | undefined {
   const hasUsername = usernames?.some((username) => username.isActive);
   const emojiStatus = mtpUser.emojiStatus ? buildApiEmojiStatus(mtpUser.emojiStatus) : undefined;
 
-  return {
+  return decorateTelegramPeer({
     id: buildApiPeerId(id, 'user'),
     isMin: Boolean(mtpUser.min),
     fakeType: scam ? 'scam' : (fake ? 'fake' : undefined),
@@ -179,7 +181,7 @@ export function buildApiUser(mtpUser: GramJs.TypeUser): ApiUser | undefined {
     canManageBots: botCanManageBots,
     isGuestChatBot: botGuestchat,
     isGuardBot: botGuard || undefined,
-  };
+  } as ApiUser & Record<string, unknown>);
 }
 
 function buildApiUserType(user: GramJs.User): ApiUserType {
