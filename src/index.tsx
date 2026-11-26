@@ -6,6 +6,7 @@ import { webLoginHandoffPromise } from './util/webLoginHandoff';
 import './util/handleError';
 import './util/setupServiceWorker';
 import './global/init';
+import './neogram';
 
 import TeactDOM from './lib/teact/teact-dom';
 import {
@@ -72,9 +73,7 @@ async function init() {
 
   if (!(window as any).isCompatTestPassed) return;
 
-  // --------------------------------------------------
   // ORIGINAL TELEGRAM INITIALIZATION
-  // --------------------------------------------------
 
   checkAndAssignPermanentWebVersion();
   listenOtherClients();
@@ -123,9 +122,7 @@ async function init() {
     console.log('>>> START INITIAL RENDER');
   }
 
-  // --------------------------------------------------
   // ORIGINAL TELEGRAM RENDER
-  // --------------------------------------------------
 
   requestMutation(() => {
     updateWebmanifest();
@@ -143,16 +140,11 @@ async function init() {
     console.log('>>> FINISH INITIAL RENDER');
   }
 
-  // --------------------------------------------------
-  // NEOGRAM ADDON
-  // Telegram remains the primary application.
-  // --------------------------------------------------
+  // NEOGRAM INITIALIZATION
 
   await initializeNeoGramAddon();
 
-  // --------------------------------------------------
   // ORIGINAL DEBUG TOOLS
-  // --------------------------------------------------
 
   if (DEBUG) {
     document.addEventListener('dblclick', () => {
@@ -178,9 +170,7 @@ async function init() {
   }
 }
 
-// --------------------------------------------------
-// NEOGRAM MODULE INITIALIZATION
-// --------------------------------------------------
+// NEOGRAM EVENT
 
 async function initializeNeoGramAddon() {
   const root = document.getElementById('root');
@@ -210,9 +200,7 @@ async function initializeNeoGramAddon() {
   }
 }
 
-// --------------------------------------------------
 // ORIGINAL PASSCODE ACTIONS
-// --------------------------------------------------
 
 async function loadPasscodeActions() {
   await Promise.all([
@@ -223,9 +211,7 @@ async function loadPasscodeActions() {
   return getActions();
 }
 
-// --------------------------------------------------
 // ORIGINAL CALL CLEANUP
-// --------------------------------------------------
 
 onBeforeUnload(() => {
   const actions = getActions();
