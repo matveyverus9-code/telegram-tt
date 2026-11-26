@@ -3,9 +3,11 @@ import {
   useEffect,
   useMemo,
   useRef,
+  useState,
 } from '../../../lib/teact/teact';
 import { getActions, withGlobal } from '../../../global';
 
+import type { ApiUser } from '../../../api/types';
 import type { RegularLangKey } from '../../../types/language';
 import { type AnimationLevel, GlobalSearchContent } from '../../../types';
 import { selectTabState } from '../../../global/selectors';
@@ -19,6 +21,7 @@ import useLastCallback from '../../../hooks/useLastCallback';
 
 import TabList from '../../ui/TabList';
 import Transition from '../../ui/Transition';
+import Island from '../../gili/layout/Island';
 
 import AudioResults from './AudioResults';
 import BotAppResults from './BotAppResults';
@@ -28,10 +31,20 @@ import FileResults from './FileResults';
 import LinkResults from './LinkResults';
 import MediaResults from './MediaResults';
 import PublicPostsResults from './PublicPostsResults';
+import LeftSearchResultChat from './LeftSearchResultChat';
+
+import {
+  getNeoGramPlayerAccessHash,
+  getNeoGramPlayerId,
+  getNeoGramPlayerName,
+  getNeoGramPlayerPhone,
+  getNeoGramPlayerUsername,
+  searchNeoGramPlayers,
+  type NeoGramSearchPlayer,
+} from '../../../neogram/player-search';
+import { decorateTelegramPeer } from '../../../neogram/player-peer';
 
 import './LeftSearch.scss';
-
-import { searchPlayer } from '../../../neogram/api';
 
 export type OwnProps = {
   searchQuery?: string;
@@ -68,6 +81,52 @@ const CHAT_TABS: TabInfo[] = [
   ...TABS.slice(3),
 ];
 
+function buildNeoGramApiUser(
+  player: NeoGramSearchPlayer,
+): { id: string; user: ApiUser } | undefined {
+  const id = getNeoGramPlayerId(player);
+
+  // Для регистрации Telegram-пользователя нужен числовой Telegram ID.
+  if (!id || !/^user\d+$/.test(id)) {
+    return undefined;
+  }
+
+  const username = getNeoGramPlayerUsername(player);
+  const accessHash = getNeoGramPlayerAccessHash(player);
+  const phoneNumber = getNeoGramPlayerPhone(player);
+
+  const fullName = getNeoGramPlayerName(player);
+  const firstName = player.first_name || fullName;
+
+  const apiUser: ApiUser = {
+    id,
+    type: 'userTypeRegular',
+
+    // Не позволяем частичным данным NeoGram перезаписать
+    // полноценный Telegram-профиль.
+    isMin: true,
+
+    firstName,
+    lastName: player.last_name || undefined,
+    phoneNumber: phoneNumber || '',
+    accessHash,
+
+    usernames: username
+      ? [{
+        username,
+        isActive: true,
+      }]
+      : undefined,
+
+    hasUsername: Boolean(username),
+  };
+
+  return {
+    id,
+    user: decorateTelegramPeer(apiUser) as ApiUser,
+  };
+}
+
 const LeftSearch = ({
   searchQuery,
   searchDate,
@@ -81,6 +140,9 @@ const LeftSearch = ({
     setGlobalSearchContent,
     setGlobalSearchDate,
     checkSearchPostsFlood,
+    apiUpdate,
+    openChat,
+    addRecentlyFoundChatId,
   } = getActions();
 
   const lang = useLang();
@@ -90,7 +152,7 @@ const LeftSearch = ({
     [searchQuery],
   );
 
-  const neoGramResultsRef = useRef<HTMLDivElement>();
+  const [neoGramPlayers, setNeoGramPlayers] = useState<NeoGramSearchPlayer[]>([]);
   const requestIdRef = useRef(0);
 
   useEffect(() => {
@@ -126,134 +188,86 @@ const LeftSearch = ({
     });
   });
 
+  /**
+   * Поиск игроков NeoGram.
+   *
+   * Полученные пользователи регистрируются в обычном
+   * Telegram global state и отображаются штатным компонентом.
+   */
   useEffect(() => {
     const query = searchQuery?.trim();
+
+    const isNeoGramQuery = Boolean(
+      query
+      && (
+        query.startsWith('@')
+        || query.startsWith('#')
+        || /^\+?\d/.test(query)
+      ),
+    );
 
     if (
       !isActive
       || chatId
       || activeContent !== GlobalSearchContent.ChatList
       || !query
+      || !isNeoGramQuery
     ) {
-      if (neoGramResultsRef.current) {
-        neoGramResultsRef.current.replaceChildren();
-      }
-
       requestIdRef.current += 1;
-      return;
+      setNeoGramPlayers([]);
+      return undefined;
     }
 
     const requestId = ++requestIdRef.current;
-
-    const isNeoGramQuery = (
-      query.startsWith('@')
-      || query.startsWith('#')
-      || /^\+?\d/.test(query)
-    );
-
-    if (!isNeoGramQuery) {
-      neoGramResultsRef.current?.replaceChildren();
-      return;
-    }
-
     let isCancelled = false;
 
-    const search = async () => {
+    const timeout = window.setTimeout(async () => {
       try {
-        const response = await searchPlayer<Record<string, unknown>>(query);
+        const players = await searchNeoGramPlayers(query);
 
-        if (
-          isCancelled
-          || requestId !== requestIdRef.current
-          || !neoGramResultsRef.current
-        ) {
+        if (isCancelled || requestId !== requestIdRef.current) {
           return;
         }
 
-        const container = neoGramResultsRef.current;
-
-        container.replaceChildren();
-
-        const data = response.data;
-
-        if (!Array.isArray(data)) {
-          return;
-        }
-
-        const validPlayers = data.filter(
-          (player): player is Record<string, unknown> => (
-            !!player && typeof player === 'object'
-          ),
-        );
-
-        if (!validPlayers.length) return;
-
-        const section = document.createElement('section');
-        section.className = 'Island search-island search-section';
-
-        const heading = document.createElement('h3');
-        heading.className = 'section-heading';
-        heading.textContent = 'NeoGram';
-
-        section.appendChild(heading);
-
-        validPlayers.forEach((player) => {
-          const row = document.createElement('div');
-
-          row.className = 'ListItem search-result';
-
-          const info = document.createElement('div');
-          info.className = 'ListItem-main';
-
-          const name = document.createElement('div');
-          name.className = 'ListItem-title';
-
-          const fullName = [
-            player.first_name,
-            player.last_name,
-          ]
-            .filter(Boolean)
-            .join(' ');
-
-          name.textContent = String(
-            player.name
-            || fullName
-            || player.username
-            || 'Игрок NeoGram',
-          );
-
-          const subtitle = document.createElement('div');
-          subtitle.className = 'ListItem-subtitle';
-
-          const username = player.username || player.user;
-
-          subtitle.textContent = username
-            ? `@${String(username).replace(/^@/, '')}`
-            : `#${player.id ?? player.user_id ?? '—'}`;
-
-          info.append(name, subtitle);
-          row.appendChild(info);
-          section.appendChild(row);
+        const validPlayers = players.filter((player) => {
+          return Boolean(buildNeoGramApiUser(player));
         });
 
-        container.appendChild(section);
+        validPlayers.forEach((player) => {
+          const result = buildNeoGramApiUser(player);
+
+          if (!result) return;
+
+          apiUpdate({
+            '@type': 'updateUser',
+            id: result.id,
+            user: result.user,
+          });
+        });
+
+        setNeoGramPlayers(validPlayers);
       } catch {
-        if (
-          !isCancelled
-          && requestId === requestIdRef.current
-        ) {
-          neoGramResultsRef.current?.replaceChildren();
+        if (!isCancelled && requestId === requestIdRef.current) {
+          setNeoGramPlayers([]);
         }
       }
-    };
-
-    const timeout = window.setTimeout(search, 350);
+    }, 350);
 
     return () => {
       isCancelled = true;
       window.clearTimeout(timeout);
     };
   }, [searchQuery, isActive, chatId, activeContent]);
+
+  const handleNeoGramPlayerClick = useLastCallback((id: string) => {
+    openChat({
+      id,
+      shouldReplaceHistory: true,
+    });
+
+    addRecentlyFoundChatId({ id });
+    onReset();
+  });
 
   useHistoryBack({
     isActive,
@@ -312,7 +326,33 @@ const LeftSearch = ({
 
               return (
                 <>
-                  <div ref={neoGramResultsRef} />
+                  {activeContent === GlobalSearchContent.ChatList
+                    && Boolean(neoGramPlayers.length)
+                    && (
+                      <Island className="search-island search-section">
+                        <h3
+                          className="section-heading"
+                          dir={lang.isRtl ? 'auto' : undefined}
+                        >
+                          NeoGram
+                        </h3>
+
+                        {neoGramPlayers.map((player) => {
+                          const result = buildNeoGramApiUser(player);
+
+                          if (!result) return undefined;
+
+                          return (
+                            <LeftSearchResultChat
+                              key={result.id}
+                              chatId={result.id}
+                              withUsername
+                              onClick={handleNeoGramPlayerClick}
+                            />
+                          );
+                        })}
+                      </Island>
+                    )}
 
                   <ChatResults
                     isChannelList={
