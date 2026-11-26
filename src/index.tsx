@@ -1,4 +1,6 @@
-/* eslint-disable simple-import-sort/imports -- Sanitize and claim URL login before other startup modules */
+
+/* eslint-disable simple-import-sort/imports -- Preserve original startup order */
+
 import { getPendingWebLogin } from './util/routing';
 import { webLoginHandoffPromise } from './util/webLoginHandoff';
 import './util/handleError';
@@ -9,18 +11,28 @@ import TeactDOM from './lib/teact/teact-dom';
 import {
   getActions, getGlobal,
 } from './global';
-
 import {
   DEBUG, STRICTERDOM_ENABLED,
 } from './config';
 import { enableStrict, requestMutation } from './lib/fasterdom/fasterdom';
-import { selectChat, selectCurrentMessageList, selectPeerFullInfo, selectTabState } from './global/selectors';
+import {
+  selectChat,
+  selectCurrentMessageList,
+  selectPeerFullInfo,
+  selectTabState,
+} from './global/selectors';
 import { selectSharedSettings } from './global/selectors/sharedState';
 import { betterView } from './util/betterView';
 import { IS_TAURI } from './util/browser/globalEnvironment';
 import listenOtherClients from './util/browser/listenOtherClients';
-import { requestGlobal, subscribeToMultitabBroadcastChannel } from './util/browser/multitab';
-import { establishMultitabRole, subscribeToMasterChange } from './util/establishMultitabRole';
+import {
+  requestGlobal,
+  subscribeToMultitabBroadcastChannel,
+} from './util/browser/multitab';
+import {
+  establishMultitabRole,
+  subscribeToMasterChange,
+} from './util/establishMultitabRole';
 import { initGlobal } from './util/init';
 import { initLocalization } from './util/localization';
 import { Bundles, loadBundle } from './util/moduleLoader';
@@ -34,7 +46,6 @@ import { onBeforeUnload } from './util/schedulers';
 import initTauriApi from './util/tauri/initTauriApi';
 import setupTauriListeners from './util/tauri/setupTauriListeners';
 import updateWebmanifest from './util/updateWebmanifest';
-
 import App from './components/App';
 
 import './assets/fonts/roboto.css';
@@ -61,23 +72,9 @@ async function init() {
 
   if (!(window as any).isCompatTestPassed) return;
 
-  // NeoGram standalone mode.
-  // When enabled, the original Telegram application is not rendered.
-  const neoGramStarted = await import('./neogram')
-    .then(({ startNeoGram }) => startNeoGram())
-    .catch((error) => {
-      // eslint-disable-next-line no-console
-      console.error('[NeoGram] Startup failed:', error);
-      return false;
-    });
-
-  if (neoGramStarted) {
-    if (DEBUG) {
-      // eslint-disable-next-line no-console
-      console.log('>>> NeoGram started');
-    }
-    return;
-  }
+  // --------------------------------------------------
+  // ORIGINAL TELEGRAM INITIALIZATION
+  // --------------------------------------------------
 
   checkAndAssignPermanentWebVersion();
   listenOtherClients();
@@ -85,7 +82,9 @@ async function init() {
   subscribeToMultitabBroadcastChannel();
   subscribeToPasscodeChannel(loadPasscodeActions);
   initPasscodeNavigation(getDek, getDekGeneration);
+
   await requestGlobal(APP_VERSION);
+
   localStorage.setItem(MULTITAB_STORAGE_KEY, '1');
 
   onBeforeUnload(() => {
@@ -97,6 +96,7 @@ async function init() {
   });
 
   await initGlobal();
+
   getActions().init();
 
   initAutolock();
@@ -123,6 +123,10 @@ async function init() {
     console.log('>>> START INITIAL RENDER');
   }
 
+  // --------------------------------------------------
+  // ORIGINAL TELEGRAM RENDER
+  // --------------------------------------------------
+
   requestMutation(() => {
     updateWebmanifest();
 
@@ -138,6 +142,18 @@ async function init() {
     // eslint-disable-next-line no-console
     console.log('>>> FINISH INITIAL RENDER');
   }
+
+  // --------------------------------------------------
+  // NEOGRAM ADDON
+  // Telegram remains the primary application.
+  // NeoGram must mount as an additional interface.
+  // --------------------------------------------------
+
+  await initializeNeoGramAddon();
+
+  // --------------------------------------------------
+  // ORIGINAL DEBUG TOOLS
+  // --------------------------------------------------
 
   if (DEBUG) {
     document.addEventListener('dblclick', () => {
@@ -163,13 +179,73 @@ async function init() {
   }
 }
 
+// --------------------------------------------------
+// NEOGRAM MODULE INITIALIZATION
+// --------------------------------------------------
+
+async function initializeNeoGramAddon() {
+  const root = document.getElementById('root');
+
+  if (!root) {
+    console.error('[NeoGram] Telegram root not found');
+    return;
+  }
+
+  try {
+    // Optional addon module. The original Telegram startup
+    // never depends on successful NeoGram initialization.
+    // @ts-ignore -- NeoGram addon is an optional module.
+    const neoGramModule = await import('./neogram');
+
+    if (typeof neoGramModule.mountNeoGram === 'function') {
+      await neoGramModule.mountNeoGram({
+        root,
+        apiUrl: 'https://tg-api.matveyverus9.workers.dev',
+        isTauri: IS_TAURI,
+      });
+    }
+
+    // Notify addon integrations that Telegram is ready.
+    window.dispatchEvent(
+      new CustomEvent('neogram:telegram-ready', {
+        detail: {
+          root,
+          apiUrl: 'https://tg-api.matveyverus9.workers.dev',
+          isTauri: IS_TAURI,
+        },
+      }),
+    );
+
+    if (DEBUG) {
+      // eslint-disable-next-line no-console
+      console.log('[NeoGram] Addon initialized');
+    }
+  } catch (error) {
+    // NeoGram failure must never disable Telegram.
+    console.error('[NeoGram] Addon initialization failed:', error);
+  }
+}
+
+// --------------------------------------------------
+// ORIGINAL PASSCODE ACTIONS
+// --------------------------------------------------
+
 async function loadPasscodeActions() {
-  await Promise.all([loadBundle(Bundles.Main), initializationPromise]);
+  await Promise.all([
+    loadBundle(Bundles.Main),
+    initializationPromise,
+  ]);
+
   return getActions();
 }
 
+// --------------------------------------------------
+// ORIGINAL CALL CLEANUP
+// --------------------------------------------------
+
 onBeforeUnload(() => {
   const actions = getActions();
+
   actions.leaveGroupCall?.({ isPageUnload: true });
   actions.hangUp?.({ isPageUnload: true });
 });
