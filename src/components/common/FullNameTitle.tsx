@@ -6,7 +6,6 @@ import type {
 } from '../../api/types';
 import type { ObserveFn } from '../../hooks/useIntersectionObserver';
 import type { CustomPeer } from '../../types';
-
 import { EMOJI_STATUS_LOOP_LIMIT } from '../../config';
 import {
   getChatTitle,
@@ -21,9 +20,14 @@ import buildStyle from '../../util/buildStyle';
 import { copyTextToClipboard } from '../../util/clipboard';
 import stopEvent from '../../util/stopEvent';
 import renderText from './helpers/renderText';
-
 import useLang from '../../hooks/useLang';
 import useLastCallback from '../../hooks/useLastCallback';
+
+import {
+  getNeoGramNicknameStyle,
+  getNeoGramVerification,
+  type NeoGramDecoratedPeer,
+} from '../../neogram/player-decorations';
 
 import Marquee from '../ui/Marquee';
 import Transition from '../ui/Transition';
@@ -84,12 +88,38 @@ const FullNameTitle = ({
 
   const realPeer = 'id' in peer ? peer : undefined;
   const customPeer = 'isCustomPeer' in peer ? peer : undefined;
+
+  const decoratedPeer = peer as typeof peer & NeoGramDecoratedPeer;
+
   const isUser = realPeer && isApiPeerUser(realPeer);
-  const title = realPeer && (isUser ? getUserFullName(lang, realPeer) : getChatTitle(lang, realPeer));
+
+  const title = realPeer && (
+    isUser
+      ? getUserFullName(lang, realPeer)
+      : getChatTitle(lang, realPeer)
+  );
+
   const isPremium = (isUser && realPeer.isPremium) || customPeer?.isPremium;
+
   const canShowEmojiStatus = withEmojiStatus && !isSavedMessages;
+
   const emojiStatus = realPeer?.emojiStatus
-    || (customPeer?.emojiStatusId ? { type: 'regular', documentId: customPeer.emojiStatusId } : undefined);
+    || (customPeer?.emojiStatusId
+      ? { type: 'regular', documentId: customPeer.emojiStatusId }
+      : undefined);
+
+  const neoGramVerified = getNeoGramVerification(decoratedPeer);
+
+  const neoGramNicknameStyle = useMemo(() => {
+    const decoration = getNeoGramNicknameStyle(decoratedPeer);
+
+    return Object.entries(decoration)
+      .map(([key, value]) => {
+        const cssKey = key.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
+        return `${cssKey}:${value}`;
+      })
+      .join(';');
+  }, [decoratedPeer.neogram]);
 
   const handleTitleClick = useLastCallback((e) => {
     if (!title || !canCopyTitle) {
@@ -124,13 +154,27 @@ const FullNameTitle = ({
 
     return undefined;
   }, [customPeer, isSavedDialog, isSavedMessages, lang, realPeer]);
-  const botVerificationIconId = !isSavedMessages && !isSavedDialog ? realPeer?.botVerificationIconId : undefined;
-  const renderedTitle = useMemo(() => specialTitle || renderText(title || ''), [specialTitle, title]);
+
+  const botVerificationIconId = !isSavedMessages && !isSavedDialog
+    ? realPeer?.botVerificationIconId
+    : undefined;
+
+  const renderedTitle = useMemo(
+    () => specialTitle || renderText(title || ''),
+    [specialTitle, title],
+  );
+
+  const titleStyle = buildStyle(
+    style,
+    neoGramNicknameStyle,
+  );
 
   return (
     <div
       className={buildClassName('title', styles.root, className)}
-      style={buildStyle(emojiStatusSize ? `--_status-size: ${emojiStatusSize}px` : undefined, style)}
+      style={buildStyle(
+        emojiStatusSize ? `--_status-size: ${emojiStatusSize}px` : undefined,
+      )}
     >
       {botVerificationIconId && (
         <CustomEmoji
@@ -140,6 +184,7 @@ const FullNameTitle = ({
           observeIntersectionForLoading={observeIntersection}
         />
       )}
+
       <h3
         dir="auto"
         role="button"
@@ -148,14 +193,24 @@ const FullNameTitle = ({
           styles.fullName,
           canCopyTitle && styles.canCopy,
         )}
+        style={titleStyle}
         onClick={handleTitleClick}
       >
-        {isScrolling ? <Marquee paused={isScrollingPaused}>{renderedTitle}</Marquee> : renderedTitle}
+        {isScrolling
+          ? <Marquee paused={isScrollingPaused}>{renderedTitle}</Marquee>
+          : renderedTitle}
       </h3>
+
       {!iconElement && peer && (
         <>
-          {!noVerified && peer?.isVerified && <VerifiedIcon />}
-          {!noFake && peer?.fakeType && <FakeIcon fakeType={peer.fakeType} />}
+          {!noVerified && (peer.isVerified || neoGramVerified) && (
+            <VerifiedIcon />
+          )}
+
+          {!noFake && peer.fakeType && (
+            <FakeIcon fakeType={peer.fakeType} />
+          )}
+
           {canShowEmojiStatus && emojiStatus && (
             <Transition
               className={styles.statusTransition}
@@ -168,11 +223,17 @@ const FullNameTitle = ({
               <GiftEffectWrapper
                 withSparkles={emojiStatus.type === 'collectible'}
                 sparklesClassName="statusSparkles"
-                sparklesColor={emojiStatus.type === 'collectible' && !withStatusTextColor
-                  ? emojiStatus.textColor : undefined}
+                sparklesColor={
+                  emojiStatus.type === 'collectible' && !withStatusTextColor
+                    ? emojiStatus.textColor
+                    : undefined
+                }
               >
                 <CustomEmoji
-                  className={buildClassName('no-selection', !withStatusTextColor && styles.statusPrimaryColor)}
+                  className={buildClassName(
+                    'no-selection',
+                    !withStatusTextColor && styles.statusPrimaryColor,
+                  )}
                   documentId={emojiStatus.documentId}
                   size={emojiStatusSize}
                   loopLimit={!noLoopLimit ? EMOJI_STATUS_LOOP_LIMIT : undefined}
@@ -182,7 +243,9 @@ const FullNameTitle = ({
               </GiftEffectWrapper>
             </Transition>
           )}
+
           {canShowEmojiStatus && !emojiStatus && isPremium && <StarIcon />}
+
           {isMonoforum && (
             <div className={buildClassName(styles.monoforumBadge, monoforumBadgeClassName)}>
               {lang('MonoforumBadge')}
@@ -190,6 +253,7 @@ const FullNameTitle = ({
           )}
         </>
       )}
+
       {iconElement}
     </div>
   );
