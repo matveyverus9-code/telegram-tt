@@ -31,12 +31,12 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - name: Configure GitHub HTTPS for Git dependencies
+      - name: Configure GitHub HTTPS
         run: |
           git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
           git config --global --add url."https://github.com/".insteadOf "git@github.com:"
 
-      - name: Install project dependencies
+      - name: Install dependencies
         run: npm install --allow-git=all
 
       - name: Install Capacitor
@@ -48,23 +48,29 @@ jobs:
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
           TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
 
-      - name: Add Android platform
+      - name: Create Android platform
         run: npx cap add android
 
       - name: Sync Android
         run: npx cap sync android
 
-      - name: Build APK
+      - name: Build Android Debug APK
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew assembleRelease
+          ./gradlew assembleDebug
 
-      - name: Upload APK
+      - name: Verify APK
+        run: |
+          test -f android/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload Android APK
         uses: actions/upload-artifact@v4
         with:
           name: NeoGram-Android-APK
-          path: android/app/build/outputs/apk/release/*.apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 30
 
   ios:
     name: Build unsigned iOS IPA
@@ -80,12 +86,12 @@ jobs:
           node-version: "24.15.0"
           cache: npm
 
-      - name: Configure GitHub HTTPS for Git dependencies
+      - name: Configure GitHub HTTPS
         run: |
           git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
           git config --global --add url."https://github.com/".insteadOf "git@github.com:"
 
-      - name: Install project dependencies
+      - name: Install dependencies
         run: npm install --allow-git=all
 
       - name: Install Capacitor
@@ -97,13 +103,13 @@ jobs:
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
           TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
 
-      - name: Add iOS platform
+      - name: Create iOS platform
         run: npx cap add ios
 
       - name: Sync iOS
         run: npx cap sync ios
 
-      - name: Build unsigned iOS app
+      - name: Build unsigned iOS application
         run: |
           xcodebuild \
             -project ios/App/App.xcodeproj \
@@ -115,15 +121,32 @@ jobs:
             build
 
       - name: Package unsigned IPA
+        shell: bash
         run: |
+          set -euo pipefail
+
+          APP_PATH="$(find build/ios/Build/Products -type d -name App.app -print -quit)"
+
+          if [ -z "$APP_PATH" ]; then
+            echo "ERROR: App.app was not found"
+            exit 1
+          fi
+
+          rm -rf Payload artifacts
           mkdir -p Payload artifacts
-          cp -R build/ios/Build/Products/Release-iphoneos/App.app Payload/
+
+          cp -R "$APP_PATH" Payload/App.app
+
           cd Payload
-          zip -r ../artifacts/NeoGram-unsigned.ipa .
+          zip -qry ../artifacts/NeoGram-unsigned.ipa Payload
           cd ..
+
+          test -f artifacts/NeoGram-unsigned.ipa
 
       - name: Upload unsigned IPA
         uses: actions/upload-artifact@v4
         with:
           name: NeoGram-Unsigned-IPA
           path: artifacts/NeoGram-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 30
