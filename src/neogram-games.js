@@ -1,243 +1,741 @@
+
 const API_BASE = 'https://tg-api.matveyverus9.workers.dev';
 
-const STORAGE_KEY = 'neogram_game_best';
+const escapeHTML = (value) =>
+  String(value ?? '').replace(/[&<>"']/g, (char) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  })[char]);
 
-const styles = `
-.ngg-wrap{padding:0 16px 24px;color:var(--ng-text)}
-.ngg-hero{padding:22px;border-radius:22px;background:linear-gradient(135deg,#2358c8,#824fe0);color:#fff;margin:8px 0 22px}
-.ngg-hero-icon{font-size:38px;margin-bottom:8px}
-.ngg-hero-title{font-size:24px;font-weight:800;letter-spacing:-.5px}
-.ngg-hero-sub{font-size:14px;line-height:20px;opacity:.82;margin-top:6px}
-.ngg-section{font-size:12px;font-weight:750;letter-spacing:.5px;text-transform:uppercase;color:var(--ng-secondary);margin:20px 0 9px}
-.ngg-card{padding:16px;border-radius:18px;background:var(--ng-card);margin-bottom:12px}
-.ngg-card-head{display:flex;justify-content:space-between;align-items:center;gap:12px}
-.ngg-card-title{font-size:18px;font-weight:750}
-.ngg-muted{font-size:13px;line-height:19px;color:var(--ng-secondary);margin-top:4px}
-.ngg-pill{padding:6px 10px;border-radius:20px;background:var(--ng-input);font-size:11px;font-weight:700;color:var(--ng-secondary)}
-.ngg-stats{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:16px 0}
-.ngg-stat{padding:14px;border-radius:14px;background:var(--ng-input)}
-.ngg-stat-value{font-size:26px;font-weight:800;font-variant-numeric:tabular-nums}
-.ngg-stat-label{font-size:11px;color:var(--ng-secondary);margin-top:3px}
-.ngg-target{width:100%;height:180px;border:0;border-radius:19px;background:linear-gradient(145deg,#2678ee,#7957d5);color:#fff;font-size:30px;font-weight:850;touch-action:manipulation}
-.ngg-target:disabled{opacity:.55}
-.ngg-start{width:100%;height:48px;margin-top:12px;border:0;border-radius:14px;background:var(--ng-blue);color:#fff;font-size:16px;font-weight:750}
-.ngg-start:disabled{opacity:.5}
-.ngg-hint{text-align:center;color:var(--ng-secondary);font-size:13px;margin-top:11px;min-height:20px}
-.ngg-leader{display:flex;align-items:center;gap:12px;padding:13px 14px;border-bottom:1px solid var(--ng-separator)}
-.ngg-leader:last-child{border-bottom:0}
-.ngg-rank{width:34px;height:34px;display:grid;place-items:center;border-radius:11px;background:var(--ng-input);font-weight:800}
-.ngg-player{flex:1;min-width:0;font-size:14px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.ngg-points{font-size:13px;color:var(--ng-secondary);font-weight:700}
-`;
-
-function escape(value) {
-  return String(value ?? '').replace(/[&<>"']/g, c => ({
-    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
-  })[c]);
-}
-
-function bestScore() {
+const readBest = () => {
   try {
-    return Number(localStorage.getItem(STORAGE_KEY) || 0);
+    return Number(localStorage.getItem('neogram_game_best') || 0);
   } catch {
     return 0;
   }
-}
+};
 
-async function request(path, token) {
-  const response = await fetch(`${API_BASE}${path}`, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {}
-  });
-  const data = await response.json();
-  if (!response.ok || data?.ok === false || data?.error) {
-    throw new Error(data?.detail || data?.message || data?.error || 'Ошибка сервера');
+const saveBest = (score) => {
+  try {
+    localStorage.setItem('neogram_game_best', String(score));
+  } catch {
+    // Local storage may be unavailable.
   }
+};
+
+async function request(path, options = {}) {
+  const token = (() => {
+    try {
+      return localStorage.getItem('neogram_token') || '';
+    } catch {
+      return '';
+    }
+  })();
+
+  const response = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(options.headers || {})
+    }
+  });
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(data.error || data.message || `Ошибка сервера: ${response.status}`);
+  }
+
   return data;
 }
 
 export function renderGamesModule(options = {}) {
-  const score = Number(options.score || 0);
-  const running = Boolean(options.running);
-  const best = bestScore();
+  const best = readBest();
 
   return `
-    <div class="ngg-wrap">
-      <style>${styles}</style>
+    <section class="ngg-root">
+      <style>
+        .ngg-root {
+          width: 100%;
+          color: var(--text, #111);
+          font-family: inherit;
+        }
 
-      <section class="ngg-hero">
-        <div class="ngg-hero-icon">🎮</div>
-        <div class="ngg-hero-title">Игровой мир NeoGram</div>
-        <div class="ngg-hero-sub">
-          Проверяй реакцию, устанавливай рекорды и соревнуйся с другими игроками.
+        .ngg-root * {
+          box-sizing: border-box;
+        }
+
+        .ngg-hero {
+          position: relative;
+          overflow: hidden;
+          padding: 22px;
+          border-radius: 25px;
+          background: linear-gradient(135deg, #725cff, #a34ce8 60%, #ed6ca7);
+          color: #fff;
+          margin-bottom: 16px;
+        }
+
+        .ngg-hero::after {
+          content: "✦";
+          position: absolute;
+          right: 20px;
+          top: 4px;
+          font-size: 100px;
+          opacity: .14;
+          transform: rotate(15deg);
+          pointer-events: none;
+        }
+
+        .ngg-eyebrow {
+          font-size: 11px;
+          font-weight: 800;
+          letter-spacing: 1.5px;
+          text-transform: uppercase;
+          opacity: .8;
+        }
+
+        .ngg-hero h2 {
+          position: relative;
+          z-index: 1;
+          margin: 8px 0 5px;
+          font-size: 27px;
+          font-weight: 850;
+          letter-spacing: -.8px;
+        }
+
+        .ngg-hero p {
+          position: relative;
+          z-index: 1;
+          margin: 0;
+          font-size: 13px;
+          opacity: .86;
+        }
+
+        .ngg-stats {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 10px;
+          margin-bottom: 16px;
+        }
+
+        .ngg-stat {
+          min-width: 0;
+          padding: 15px;
+          border: 1px solid var(--border, rgba(128,128,128,.18));
+          border-radius: 19px;
+          background: var(--card, rgba(128,128,128,.07));
+        }
+
+        .ngg-stat-label {
+          color: var(--muted, #888);
+          font-size: 12px;
+          font-weight: 600;
+        }
+
+        .ngg-stat-value {
+          margin-top: 5px;
+          font-size: 24px;
+          line-height: 1.2;
+          font-weight: 850;
+          font-variant-numeric: tabular-nums;
+        }
+
+        .ngg-card {
+          padding: 17px;
+          margin-bottom: 14px;
+          border: 1px solid var(--border, rgba(128,128,128,.18));
+          border-radius: 22px;
+          background: var(--card, rgba(128,128,128,.07));
+        }
+
+        .ngg-card-head {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 10px;
+          margin-bottom: 13px;
+        }
+
+        .ngg-card-title {
+          font-size: 17px;
+          font-weight: 800;
+        }
+
+        .ngg-pill {
+          padding: 5px 9px;
+          border-radius: 999px;
+          background: rgba(115, 91, 255, .13);
+          color: #927cff;
+          font-size: 11px;
+          font-weight: 800;
+          white-space: nowrap;
+        }
+
+        .ngg-tap-zone {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          padding: 14px 0 8px;
+        }
+
+        .ngg-tap-button {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          width: min(60vw, 220px);
+          height: min(60vw, 220px);
+          max-width: 220px;
+          max-height: 220px;
+          border: 0;
+          border-radius: 50%;
+          color: #fff;
+          background: radial-gradient(circle at 35% 25%, #b4a5ff, #7659ff 55%, #5639d6);
+          box-shadow:
+            0 12px 0 #4931b4,
+            0 18px 30px rgba(100, 75, 240, .28),
+            inset 0 4px 10px rgba(255,255,255,.25);
+          font-size: 65px;
+          cursor: pointer;
+          user-select: none;
+          -webkit-tap-highlight-color: transparent;
+          touch-action: manipulation;
+          transition: transform .08s ease, box-shadow .08s ease;
+        }
+
+        .ngg-tap-button:active {
+          transform: translateY(8px) scale(.97);
+          box-shadow:
+            0 4px 0 #4931b4,
+            0 9px 18px rgba(100, 75, 240, .2),
+            inset 0 4px 10px rgba(255,255,255,.25);
+        }
+
+        .ngg-tap-button:disabled {
+          opacity: .55;
+          cursor: default;
+        }
+
+        .ngg-score {
+          margin-top: 20px;
+          font-size: 38px;
+          font-weight: 900;
+          line-height: 1;
+          font-variant-numeric: tabular-nums;
+        }
+
+        .ngg-score-caption {
+          margin-top: 6px;
+          color: var(--muted, #888);
+          font-size: 12px;
+        }
+
+        .ngg-timer {
+          width: 100%;
+          height: 8px;
+          overflow: hidden;
+          margin-top: 18px;
+          border-radius: 20px;
+          background: rgba(128,128,128,.16);
+        }
+
+        .ngg-timer-fill {
+          width: 100%;
+          height: 100%;
+          border-radius: inherit;
+          background: linear-gradient(90deg, #7659ff, #e56db5);
+          transition: width .1s linear;
+        }
+
+        .ngg-time {
+          margin-top: 9px;
+          color: var(--muted, #888);
+          font-size: 12px;
+          font-weight: 700;
+          font-variant-numeric: tabular-nums;
+        }
+
+        .ngg-actions {
+          display: flex;
+          gap: 9px;
+          width: 100%;
+          margin-top: 17px;
+        }
+
+        .ngg-button {
+          flex: 1;
+          min-height: 44px;
+          padding: 11px 14px;
+          border: 0;
+          border-radius: 14px;
+          background: #7659ff;
+          color: white;
+          font-size: 13px;
+          font-weight: 800;
+          cursor: pointer;
+        }
+
+        .ngg-button.secondary {
+          background: rgba(128,128,128,.13);
+          color: var(--text, #111);
+        }
+
+        .ngg-button:disabled {
+          opacity: .45;
+          cursor: default;
+        }
+
+        .ngg-message {
+          min-height: 18px;
+          margin-top: 11px;
+          color: var(--muted, #888);
+          text-align: center;
+          font-size: 12px;
+        }
+
+        .ngg-leaderboard {
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+        }
+
+        .ngg-player {
+          display: flex;
+          align-items: center;
+          gap: 11px;
+          padding: 11px 2px;
+          border-bottom: 1px solid var(--border, rgba(128,128,128,.12));
+        }
+
+        .ngg-player:last-child {
+          border-bottom: 0;
+        }
+
+        .ngg-rank {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          width: 29px;
+          height: 29px;
+          flex: 0 0 29px;
+          border-radius: 10px;
+          background: rgba(128,128,128,.12);
+          font-size: 12px;
+          font-weight: 900;
+        }
+
+        .ngg-rank.first {
+          color: #9a6b00;
+          background: #ffdf83;
+        }
+
+        .ngg-rank.second {
+          color: #555;
+          background: #dce0e7;
+        }
+
+        .ngg-rank.third {
+          color: #8d542b;
+          background: #e9b58e;
+        }
+
+        .ngg-player-info {
+          flex: 1;
+          min-width: 0;
+        }
+
+        .ngg-player-name {
+          overflow: hidden;
+          font-size: 13px;
+          font-weight: 750;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+
+        .ngg-player-sub {
+          margin-top: 3px;
+          color: var(--muted, #888);
+          font-size: 11px;
+        }
+
+        .ngg-player-score {
+          font-size: 14px;
+          font-weight: 900;
+          font-variant-numeric: tabular-nums;
+        }
+
+        .ngg-empty {
+          padding: 20px 10px;
+          color: var(--muted, #888);
+          text-align: center;
+          font-size: 13px;
+        }
+
+        .ngg-section-note {
+          margin: 0 0 12px;
+          color: var(--muted, #888);
+          font-size: 12px;
+          line-height: 1.5;
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+          .ngg-root *,
+          .ngg-root *::before,
+          .ngg-root *::after {
+            transition-duration: .01ms !important;
+          }
+        }
+      </style>
+
+      <div class="ngg-hero">
+        <div class="ngg-eyebrow">NEOGRAM ARCADE</div>
+        <h2>Игровая зона</h2>
+        <p>Играй, набирай очки и поднимайся в рейтинге</p>
+      </div>
+
+      <div class="ngg-stats">
+        <div class="ngg-stat">
+          <div class="ngg-stat-label">Твой рекорд</div>
+          <div class="ngg-stat-value" data-ngg-best>${best}</div>
         </div>
-      </section>
+        <div class="ngg-stat">
+          <div class="ngg-stat-label">Время раунда</div>
+          <div class="ngg-stat-value">10 сек.</div>
+        </div>
+      </div>
 
-      <div class="ngg-section">Мини-игры</div>
-
-      <section class="ngg-card">
+      <div class="ngg-card">
         <div class="ngg-card-head">
-          <div>
-            <div class="ngg-card-title">Tap Game</div>
-            <div class="ngg-muted">Набери максимум нажатий за 10 секунд</div>
-          </div>
-          <span class="ngg-pill">Реакция</span>
+          <div class="ngg-card-title">⚡ NeoGram Tap</div>
+          <span class="ngg-pill">АРКАДА</span>
         </div>
 
-        <div class="ngg-stats">
-          <div class="ngg-stat">
-            <div class="ngg-stat-value" data-ngg-score>${score}</div>
-            <div class="ngg-stat-label">Текущий результат</div>
+        <p class="ngg-section-note">
+          Нажимай на фиолетовую сферу как можно быстрее.
+          Раунд длится 10 секунд. Результат отправляется на сервер.
+        </p>
+
+        <div class="ngg-tap-zone">
+          <button class="ngg-tap-button" type="button" data-ngg-tap aria-label="Нажать">
+            ⚡
+          </button>
+
+          <div class="ngg-score" data-ngg-score>0</div>
+          <div class="ngg-score-caption">нажатий за раунд</div>
+
+          <div class="ngg-timer">
+            <div class="ngg-timer-fill" data-ngg-timer-fill></div>
           </div>
-          <div class="ngg-stat">
-            <div class="ngg-stat-value" data-ngg-best>${best}</div>
-            <div class="ngg-stat-label">Твой рекорд</div>
+          <div class="ngg-time" data-ngg-time>Нажми «Старт», чтобы начать</div>
+
+          <div class="ngg-actions">
+            <button class="ngg-button" type="button" data-ngg-start>
+              Начать игру
+            </button>
+            <button class="ngg-button secondary" type="button" data-ngg-reset>
+              Сбросить
+            </button>
           </div>
+
+          <div class="ngg-message" data-ngg-message></div>
         </div>
+      </div>
 
-        <button class="ngg-target" data-ngg-tap ${running ? '' : 'disabled'}>
-          ${running ? 'НАЖИМАЙ!' : '🎯'}
-        </button>
-
-        <button class="ngg-start" data-ngg-start ${running ? 'disabled' : ''}>
-          ${running ? 'Игра идёт…' : 'Начать игру'}
-        </button>
-
-        <div class="ngg-hint" data-ngg-hint>
-          ${running ? 'Нажимай на большую кнопку!' : 'У тебя будет 10 секунд'}
+      <div class="ngg-card">
+        <div class="ngg-card-head">
+          <div class="ngg-card-title">🏆 Таблица лидеров</div>
+          <button class="ngg-button secondary" style="flex:0 0 auto;min-height:34px;padding:7px 11px" type="button" data-ngg-refresh>
+            Обновить
+          </button>
         </div>
-      </section>
-
-      <div class="ngg-section">Рейтинг сообщества</div>
-
-      <section class="ngg-card" data-ngg-leaderboard>
-        <div class="ngg-hint">Нажми «Обновить рейтинг», чтобы загрузить результаты.</div>
-      </section>
-
-      <button class="ngg-start" data-ngg-refresh style="margin-top:0">
-        Обновить рейтинг
-      </button>
-    </div>
+        <p class="ngg-section-note">
+          Лучшие результаты игроков NeoGram.
+        </p>
+        <div class="ngg-leaderboard" data-ngg-leaderboard>
+          <div class="ngg-empty">Загружаем рейтинг…</div>
+        </div>
+      </div>
+    </section>
   `;
 }
 
 export function bindGamesModule(container, options = {}) {
   if (!container) return () => {};
 
-  const token = options.token || '';
+  const root = container.matches?.('.ngg-root')
+    ? container
+    : container.querySelector('.ngg-root');
+
+  if (!root) return () => {};
+
   let score = 0;
-  let seconds = 10;
+  let timeLeft = 10;
   let running = false;
+  let finished = false;
   let timer = null;
+  let startedAt = 0;
+  let best = readBest();
+  let destroyed = false;
 
-  const scoreNode = container.querySelector('[data-ngg-score]');
-  const bestNode = container.querySelector('[data-ngg-best]');
-  const hint = container.querySelector('[data-ngg-hint]');
-  const target = container.querySelector('[data-ngg-tap]');
-  const start = container.querySelector('[data-ngg-start]');
-  const board = container.querySelector('[data-ngg-leaderboard]');
+  const find = (selector) => root.querySelector(selector);
 
-  function updateScore() {
-    if (scoreNode) scoreNode.textContent = String(score);
-  }
+  const tapButton = find('[data-ngg-tap]');
+  const startButton = find('[data-ngg-start]');
+  const resetButton = find('[data-ngg-reset]');
+  const refreshButton = find('[data-ngg-refresh]');
+  const scoreNode = find('[data-ngg-score]');
+  const timeNode = find('[data-ngg-time]');
+  const timerFill = find('[data-ngg-timer-fill]');
+  const messageNode = find('[data-ngg-message]');
+  const bestNode = find('[data-ngg-best]');
+  const leaderboardNode = find('[data-ngg-leaderboard]');
 
-  function stopGame() {
-    clearInterval(timer);
-    timer = null;
-    running = false;
+  if (!tapButton || !startButton || !scoreNode) return () => {};
 
-    const best = Math.max(bestScore(), score);
+  const setMessage = (message) => {
+    if (messageNode) messageNode.textContent = message;
+  };
 
-    try {
-      localStorage.setItem(STORAGE_KEY, String(best));
-    } catch {}
+  const updateScore = () => {
+    scoreNode.textContent = String(score);
+  };
 
+  const updateTime = () => {
+    if (timeNode) {
+      timeNode.textContent = running
+        ? `Осталось ${timeLeft.toFixed(1)} сек.`
+        : finished
+          ? 'Раунд завершён'
+          : 'Нажми «Начать игру», чтобы начать';
+    }
+
+    if (timerFill) {
+      timerFill.style.width = `${Math.max(0, Math.min(100, timeLeft * 10))}%`;
+    }
+  };
+
+  const updateBest = () => {
     if (bestNode) bestNode.textContent = String(best);
-    if (target) {
-      target.disabled = true;
-      target.textContent = '🏁';
+  };
+
+  const setRunningUI = (value) => {
+    running = value;
+    tapButton.disabled = !value;
+    startButton.disabled = value;
+    startButton.textContent = value ? 'Игра идёт…' : 'Играть снова';
+  };
+
+  const stopTimer = () => {
+    if (timer !== null) {
+      clearInterval(timer);
+      timer = null;
     }
-    if (start) {
-      start.disabled = false;
-      start.textContent = 'Играть ещё раз';
-    }
-    if (hint) hint.textContent = `Время вышло! Результат: ${score}`;
+  };
 
-    fetch(`${API_BASE}/game/tap`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {})
-      },
-      body: JSON.stringify({ score })
-    }).catch(() => {});
-  }
+  const loadLeaderboard = async () => {
+    if (destroyed || !leaderboardNode) return;
 
-  function tap() {
-    if (!running) return;
-    score += 1;
-    updateScore();
-  }
-
-  function begin() {
-    if (running) return;
-
-    score = 0;
-    seconds = 10;
-    running = true;
-    updateScore();
-
-    if (target) {
-      target.disabled = false;
-      target.textContent = 'НАЖИМАЙ!';
-    }
-    if (start) {
-      start.disabled = true;
-      start.textContent = 'Игра идёт…';
-    }
-    if (hint) hint.textContent = `Осталось ${seconds} секунд`;
-
-    timer = setInterval(() => {
-      seconds -= 1;
-      if (hint) hint.textContent = `Осталось ${seconds} секунд`;
-      if (seconds <= 0) stopGame();
-    }, 1000);
-  }
-
-  async function loadLeaderboard() {
-    if (!board) return;
-    board.innerHTML = '<div class="ngg-hint">Загружаем рейтинг…</div>';
+    leaderboardNode.innerHTML = '<div class="ngg-empty">Загружаем рейтинг…</div>';
 
     try {
-      const result = await request('/leaderboard', token);
-      const list = Array.isArray(result)
-        ? result
-        : result.leaderboard || result.players || result.users || result.results || [];
+      const data = await request('/leaderboard');
+      if (destroyed) return;
 
-      if (!Array.isArray(list) || !list.length) {
-        board.innerHTML = '<div class="ngg-hint">Рейтинг пока пуст.</div>';
+      const rows = Array.isArray(data)
+        ? data
+        : Array.isArray(data.leaderboard)
+          ? data.leaderboard
+          : Array.isArray(data.players)
+            ? data.players
+            : Array.isArray(data.items)
+              ? data.items
+              : [];
+
+      if (!rows.length) {
+        leaderboardNode.innerHTML = '<div class="ngg-empty">Пока нет результатов. Стань первым!</div>';
         return;
       }
 
-      board.innerHTML = list.slice(0, 20).map((player, index) => `
-        <div class="ngg-leader">
-          <div class="ngg-rank">${['🥇','🥈','🥉'][index] || index + 1}</div>
-          <div class="ngg-player">${escape(player.username || player.name || `Игрок ${index + 1}`)}</div>
-          <div class="ngg-points">${escape(player.score ?? player.points ?? player.value ?? 0)} очков</div>
-        </div>
-      `).join('');
+      leaderboardNode.innerHTML = rows.slice(0, 50).map((player, index) => {
+        const rank = index + 1;
+        const name = escapeHTML(
+          player.username ||
+          player.name ||
+          player.first_name ||
+          player.phone ||
+          `Игрок ${rank}`
+        );
+        const points = Number(
+          player.score ??
+          player.points ??
+          player.best ??
+          player.taps ??
+          0
+        );
+
+        const rankClass = rank === 1
+          ? 'first'
+          : rank === 2
+            ? 'second'
+            : rank === 3
+              ? 'third'
+              : '';
+
+        return `
+          <div class="ngg-player">
+            <div class="ngg-rank ${rankClass}">${rank}</div>
+            <div class="ngg-player-info">
+              <div class="ngg-player-name">${name}</div>
+              <div class="ngg-player-sub">NeoGram player</div>
+            </div>
+            <div class="ngg-player-score">${Number.isFinite(points) ? points : 0}</div>
+          </div>
+        `;
+      }).join('');
     } catch (error) {
-      board.innerHTML = `<div class="ngg-hint">${escape(error.message || 'Не удалось загрузить рейтинг')}</div>`;
+      if (!destroyed) {
+        leaderboardNode.innerHTML = `
+          <div class="ngg-empty">
+            Не удалось загрузить рейтинг.<br>
+            ${escapeHTML(error.message)}
+          </div>
+        `;
+      }
     }
-  }
+  };
 
-  target?.addEventListener('click', tap);
-  start?.addEventListener('click', begin);
-  container.querySelector('[data-ngg-refresh]')?.addEventListener('click', loadLeaderboard);
+  const submitResult = async (finalScore, duration) => {
+    try {
+      await request('/game/tap', {
+        method: 'POST',
+        body: JSON.stringify({
+          score: finalScore,
+          duration,
+          game: 'tap'
+        })
+      });
 
+      if (!destroyed) {
+        setMessage('Результат сохранён на сервере');
+        loadLeaderboard();
+      }
+    } catch (error) {
+      if (!destroyed) {
+        setMessage(`Не удалось сохранить результат: ${error.message}`);
+      }
+    }
+  };
+
+  const finishGame = () => {
+    if (!running || finished) return;
+
+    stopTimer();
+    finished = true;
+    timeLeft = 0;
+
+    setRunningUI(false);
+    updateTime();
+
+    const previousBest = best;
+    if (score > best) {
+      best = score;
+      saveBest(best);
+      updateBest();
+    }
+
+    setMessage(
+      score > previousBest
+        ? `🎉 Новый личный рекорд: ${score}!`
+        : `Раунд завершён. Твой результат: ${score}`
+    );
+
+    const duration = Math.max(0, Date.now() - startedAt);
+    submitResult(score, duration);
+  };
+
+  const startGame = () => {
+    if (running || destroyed) return;
+
+    stopTimer();
+    score = 0;
+    timeLeft = 10;
+    finished = false;
+    startedAt = Date.now();
+
+    updateScore();
+    updateTime();
+    setMessage('Поехали! Нажимай быстрее!');
+    setRunningUI(true);
+
+    timer = setInterval(() => {
+      if (destroyed || !running) {
+        stopTimer();
+        return;
+      }
+
+      const elapsed = (Date.now() - startedAt) / 1000;
+      timeLeft = Math.max(0, 10 - elapsed);
+      updateTime();
+
+      if (timeLeft <= 0) finishGame();
+    }, 50);
+  };
+
+  const tap = () => {
+    if (!running || destroyed) return;
+
+    score += 1;
+    updateScore();
+
+    if (score > best) {
+      best = score;
+      updateBest();
+    }
+  };
+
+  const resetGame = () => {
+    stopTimer();
+    running = false;
+    finished = false;
+    score = 0;
+    timeLeft = 10;
+
+    setRunningUI(false);
+    updateScore();
+    updateTime();
+    setMessage('Раунд сброшен');
+  };
+
+  const onTap = (event) => {
+    event.preventDefault();
+    tap();
+  };
+
+  const onStart = () => startGame();
+  const onReset = () => resetGame();
+  const onRefresh = () => loadLeaderboard();
+
+  tapButton.addEventListener('pointerdown', onTap);
+  startButton.addEventListener('click', onStart);
+  resetButton?.addEventListener('click', onReset);
+  refreshButton?.addEventListener('click', onRefresh);
+
+  tapButton.disabled = true;
+  updateScore();
+  updateTime();
+  updateBest();
   loadLeaderboard();
 
   return () => {
-    clearInterval(timer);
-    timer = null;
+    destroyed = true;
+    stopTimer();
+
+    tapButton.removeEventListener('pointerdown', onTap);
+    startButton.removeEventListener('click', onStart);
+    resetButton?.removeEventListener('click', onReset);
+    refreshButton?.removeEventListener('click', onRefresh);
   };
 }
