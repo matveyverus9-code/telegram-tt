@@ -10,7 +10,6 @@ import type {
 import type { ObserveFn } from '../../hooks/useIntersectionObserver';
 import type { CustomPeer, StoryViewerOrigin } from '../../types';
 import { ApiMediaFormat } from '../../api/types';
-
 import { IS_TEST } from '../../config';
 import {
   getChatAvatarHash,
@@ -33,7 +32,6 @@ import { isUserId } from '../../util/entities/ids';
 import { getFirstLetters } from '../../util/text/textFormat';
 import { REM } from './helpers/mediaDimensions';
 import renderText from './helpers/renderText';
-
 import { useFastClick } from '../../hooks/useFastClick';
 import useLang from '../../hooks/useLang';
 import useLastCallback from '../../hooks/useLastCallback';
@@ -44,9 +42,13 @@ import { getPeerColorClass } from '../../hooks/usePeerColor';
 import OptimizedVideo from '../ui/OptimizedVideo';
 import AvatarStoryCircle from './AvatarStoryCircle';
 import Icon from './icons/Icon';
-
 import './Avatar.scss';
 import styles from './Avatar.module.scss';
+
+import {
+  getNeoGramAvatarFrame,
+  type NeoGramDecoratedPeer,
+} from '../../neogram/player-decorations';
 
 const LOOP_COUNT = 3;
 
@@ -139,14 +141,15 @@ const Avatar = ({
   onLoad,
 }: OwnProps) => {
   const { openStoryViewer } = getActions();
-
   const videoLoopCountRef = useRef(0);
   const loadedImageRef = useRef<LoadedImage>();
   const [fadingImgUrl, setFadingImgUrl] = useState<string | undefined>();
+
   const isCustomPeer = peer && 'isCustomPeer' in peer;
   const realPeer = peer && !isCustomPeer ? peer : undefined;
   const user = realPeer && isApiPeerUser(realPeer) ? realPeer : undefined;
   const chat = realPeer && isApiPeerChat(realPeer) ? realPeer : undefined;
+
   const isDeleted = user && isDeletedUser(user);
   const isReplies = realPeer && isChatWithRepliesBot(realPeer.id);
   const isAnonymousForwards = realPeer && isAnonymousForwardsChat(realPeer.id);
@@ -156,6 +159,11 @@ const Avatar = ({
   const peerColorKey = getPeerColorKey(peer, true);
   const peerColorClass = peerColorKey !== undefined ? getPeerColorClass(peerColorKey) : undefined;
 
+  // NeoGram: рамка берётся из серверных данных игрока.
+  const neoGramAvatarFrame = getNeoGramAvatarFrame(
+    peer as unknown as NeoGramDecoratedPeer | undefined,
+  );
+
   const isStoryClickable = withStory && storyViewerMode !== 'disabled' && realPeer?.hasStories;
 
   let imageHash: string | undefined;
@@ -164,8 +172,8 @@ const Avatar = ({
   const pxSize = typeof size === 'number' ? size : AVATAR_SIZES[size];
 
   const shouldLoadVideo = withVideo && photo?.isVideo;
-
   const isBig = pxSize >= AVATAR_SIZES.jumbo;
+
   if (!isSavedMessages && !isDeleted) {
     if ((user && !noPersonalPhoto) || chat) {
       imageHash = getChatAvatarHash(peer as ApiPeer, isBig ? 'big' : undefined);
@@ -206,26 +214,33 @@ const Avatar = ({
 
   const imgBlobUrl = useMedia(imageHash, false, ApiMediaFormat.BlobUrl);
   const videoBlobUrl = useMedia(videoHash, !shouldLoadVideo, ApiMediaFormat.BlobUrl);
-
   const peerId = realPeer?.id;
+
   if (!imageHash) {
     loadedImageRef.current = undefined;
   } else if (imgBlobUrl && imgBlobUrl !== loadedImageRef.current?.url) {
     const prevImage = loadedImageRef.current;
+
     loadedImageRef.current = {
       peerId,
       url: imgBlobUrl,
       replacedUrl: peerId && prevImage?.peerId === peerId ? prevImage.url : undefined,
     };
   }
-  const peerImage = peerId && loadedImageRef.current?.peerId === peerId ? loadedImageRef.current : undefined;
+
+  const peerImage = peerId && loadedImageRef.current?.peerId === peerId
+    ? loadedImageRef.current
+    : undefined;
+
   const imgUrl = imgBlobUrl || previewUrl || peerImage?.url;
   const replacedImgUrl = imgBlobUrl && peerImage?.replacedUrl;
   const hasBlobUrl = Boolean(imgUrl || videoBlobUrl);
-  // `videoBlobUrl` can be taken from memory cache, so we need to check `shouldLoadVideo` again
+
   const shouldPlayVideo = Boolean(videoBlobUrl && shouldLoadVideo);
 
-  const { ref: mediaRef } = useMediaTransition<HTMLImageElement>({ hasMediaData: hasBlobUrl });
+  const { ref: mediaRef } = useMediaTransition<HTMLImageElement>({
+    hasMediaData: hasBlobUrl,
+  });
 
   const handleImgLoad = useLastCallback(() => {
     if (replacedImgUrl) setFadingImgUrl(replacedImgUrl);
@@ -244,6 +259,7 @@ const Avatar = ({
     if (loopIndefinitely) return;
 
     videoLoopCountRef.current += 1;
+
     if (videoLoopCountRef.current >= LOOP_COUNT) {
       video.style.display = 'none';
     }
@@ -252,7 +268,10 @@ const Avatar = ({
   const lang = useLang();
 
   let content: TeactNode | undefined;
-  const author = user ? getUserFullName(lang, user) : (chat ? getChatTitle(lang, chat) : text);
+
+  const author = user
+    ? getUserFullName(lang, user)
+    : (chat ? getChatTitle(lang, chat) : text);
 
   if (specialIcon) {
     content = (
@@ -275,6 +294,7 @@ const Avatar = ({
           draggable={false}
           onLoad={handleImgLoad}
         />
+
         {shouldPlayVideo && (
           <OptimizedVideo
             canPlay
@@ -290,12 +310,16 @@ const Avatar = ({
             onEnded={handleVideoEnded}
           />
         )}
+
         {replacedImgUrl && (
           <img
             key={replacedImgUrl}
             src={replacedImgUrl}
             className={buildClassName(
-              styles.media, 'avatar-media', styles.replaced, replacedImgUrl === fadingImgUrl && styles.fadeOut,
+              styles.media,
+              'avatar-media',
+              styles.replaced,
+              replacedImgUrl === fadingImgUrl && styles.fadeOut,
             )}
             alt=""
             draggable={false}
@@ -319,6 +343,7 @@ const Avatar = ({
   const isRoundedRect = (isCustomPeer && peer.isAvatarSquare)
     || isCommunity
     || (isForum && !forceRound && !((withStory || withStorySolid) && realPeer?.hasStories));
+
   const isPremiumGradient = isCustomPeer && peer.withPremiumGradient;
   const customColor = isCustomPeer && peer.customPeerAvatarColor;
 
@@ -362,6 +387,7 @@ const Avatar = ({
         isSinglePeer: storyViewerMode === 'single-peer',
         origin: storyViewerOrigin,
       });
+
       return;
     }
 
@@ -389,6 +415,26 @@ const Avatar = ({
           ? <span className="letters">{renderText(content, [isBig ? 'hq_emoji' : 'emoji'])}</span>
           : content}
       </div>
+
+      {neoGramAvatarFrame && (
+        <img
+          className="neogram-avatar-frame"
+          src={neoGramAvatarFrame}
+          alt=""
+          aria-hidden
+          draggable={false}
+          style="
+            position: absolute;
+            z-index: 2;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            pointer-events: none;
+          "
+        />
+      )}
+
       {withStory && realPeer?.hasStories && (
         <AvatarStoryCircle
           peerId={realPeer.id}
