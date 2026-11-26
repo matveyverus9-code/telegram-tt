@@ -1,5 +1,7 @@
+
 import {
   attachNeoGramDecorations,
+  normalizeNeoGramDecorations,
   type NeoGramDecoratedPeer,
   type NeoGramPlayerDecorations,
 } from './player-decorations';
@@ -24,12 +26,46 @@ type NativePeer = {
 
 const playersByIdentifier = new Map<string, NeoGramServerPlayer>();
 
+/**
+ * Нормализует идентификатор.
+ * Убирает @ у username и поддерживает варианты user123 / 123.
+ */
 function normalizeIdentifier(value: unknown): string | undefined {
   if (value === undefined || value === null) return undefined;
 
-  const normalized = String(value).trim().toLowerCase();
+  let normalized = String(value).trim().toLowerCase();
+
+  if (!normalized) return undefined;
+
+  if (normalized.startsWith('@')) {
+    normalized = normalized.slice(1);
+  }
 
   return normalized || undefined;
+}
+
+/**
+ * Возвращает варианты идентификатора.
+ *
+ * Telegram peer может иметь ID вида user123,
+ * а сервер NeoGram может прислать просто 123.
+ */
+function getIdentifierVariants(value: unknown): string[] {
+  const normalized = normalizeIdentifier(value);
+
+  if (!normalized) return [];
+
+  const variants = new Set<string>([normalized]);
+
+  const userIdMatch = normalized.match(/^user(\d+)$/);
+
+  if (userIdMatch) {
+    variants.add(userIdMatch[1]);
+  } else if (/^\d+$/.test(normalized)) {
+    variants.add(`user${normalized}`);
+  }
+
+  return Array.from(variants);
 }
 
 function getPlayerIdentifiers(
@@ -45,10 +81,9 @@ function getPlayerIdentifiers(
     player.phone,
   ];
 
-  return values
-    .map(normalizeIdentifier)
-    .filter((value): value is string => Boolean(value))
-    .map((value) => value.startsWith('@') ? value.slice(1) : value);
+  return Array.from(new Set(
+    values.flatMap(getIdentifierVariants),
+  ));
 }
 
 function getPeerIdentifiers(peer: NativePeer): string[] {
@@ -58,10 +93,9 @@ function getPeerIdentifiers(peer: NativePeer): string[] {
     peer.phone,
   ];
 
-  return values
-    .map(normalizeIdentifier)
-    .filter((value): value is string => Boolean(value))
-    .map((value) => value.startsWith('@') ? value.slice(1) : value);
+  return Array.from(new Set(
+    values.flatMap(getIdentifierVariants),
+  ));
 }
 
 /**
@@ -88,6 +122,8 @@ export function registerNeoGramPlayer(
 export function registerNeoGramPlayers(
   players: NeoGramServerPlayer[],
 ): void {
+  if (!Array.isArray(players)) return;
+
   players.forEach(registerNeoGramPlayer);
 }
 
@@ -108,18 +144,31 @@ export function findNeoGramPlayer(
 
 /**
  * Добавляет NeoGram-данные к существующему объекту Telegram.
+ *
+ * Приоритет:
+ * 1. Декорации, уже вложенные сервером в peer.neogram.
+ * 2. Данные игрока из локального кеша.
+ *
  * Родные поля, фотографии, ID и остальные данные не изменяются.
  */
 export function decorateTelegramPeer<T extends NativePeer>(
   peer: T,
 ): T & NeoGramDecoratedPeer {
-  const player = findNeoGramPlayer(peer);
+  const cachedPlayer = findNeoGramPlayer(peer);
+  const serverDecorations = peer.neogram;
 
-  if (!player) return peer as T & NeoGramDecoratedPeer;
+  if (!cachedPlayer && !serverDecorations) {
+    return peer as T & NeoGramDecoratedPeer;
+  }
+
+  const decorations: NeoGramPlayerDecorations = {
+    ...(cachedPlayer || {}),
+    ...(serverDecorations || {}),
+  };
 
   return attachNeoGramDecorations(
     peer as T & NeoGramDecoratedPeer,
-    player,
+    decorations,
   );
 }
 
@@ -138,15 +187,11 @@ export function updateNeoGramPlayer(
 export function clearNeoGramPlayer(
   identifier: string | number,
 ): void {
-  const normalized = normalizeIdentifier(identifier);
+  const variants = getIdentifierVariants(identifier);
 
-  if (!normalized) return;
-
-  playersByIdentifier.delete(
-    normalized.startsWith('@')
-      ? normalized.slice(1)
-      : normalized,
-  );
+  variants.forEach((variant) => {
+    playersByIdentifier.delete(variant);
+  });
 }
 
 /**
@@ -162,13 +207,11 @@ export function clearNeoGramPlayers(): void {
 export function getNeoGramPlayer(
   identifier: string | number,
 ): NeoGramServerPlayer | undefined {
-  const normalized = normalizeIdentifier(identifier);
+  for (const variant of getIdentifierVariants(identifier)) {
+    const player = playersByIdentifier.get(variant);
 
-  if (!normalized) return undefined;
+    if (player) return player;
+  }
 
-  return playersByIdentifier.get(
-    normalized.startsWith('@')
-      ? normalized.slice(1)
-      : normalized,
-  );
+  return undefined;
 }
