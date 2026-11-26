@@ -146,7 +146,6 @@ async function init() {
   // --------------------------------------------------
   // NEOGRAM ADDON
   // Telegram remains the primary application.
-  // NeoGram must mount as an additional interface.
   // --------------------------------------------------
 
   await initializeNeoGramAddon();
@@ -183,7 +182,6 @@ async function init() {
 // NEOGRAM MODULE INITIALIZATION
 // --------------------------------------------------
 
-
 async function initializeNeoGramAddon() {
   const root = document.getElementById('root');
 
@@ -209,26 +207,6 @@ async function initializeNeoGramAddon() {
     }
   } catch (error) {
     console.error('[NeoGram] Initialization failed:', error);
-  }
-}
-    // Notify addon integrations that Telegram is ready.
-    window.dispatchEvent(
-      new CustomEvent('neogram:telegram-ready', {
-        detail: {
-          root,
-          apiUrl: 'https://tg-api.matveyverus9.workers.dev',
-          isTauri: IS_TAURI,
-        },
-      }),
-    );
-
-    if (DEBUG) {
-      // eslint-disable-next-line no-console
-      console.log('[NeoGram] Addon initialized');
-    }
-  } catch (error) {
-    // NeoGram failure must never disable Telegram.
-    console.error('[NeoGram] Addon initialization failed:', error);
   }
 }
 
