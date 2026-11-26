@@ -73,8 +73,6 @@ async function init() {
 
   if (!(window as any).isCompatTestPassed) return;
 
-  // ORIGINAL TELEGRAM INITIALIZATION
-
   checkAndAssignPermanentWebVersion();
   listenOtherClients();
 
@@ -122,8 +120,6 @@ async function init() {
     console.log('>>> START INITIAL RENDER');
   }
 
-  // ORIGINAL TELEGRAM RENDER
-
   requestMutation(() => {
     updateWebmanifest();
 
@@ -140,11 +136,7 @@ async function init() {
     console.log('>>> FINISH INITIAL RENDER');
   }
 
-  // NEOGRAM INITIALIZATION
-
   await initializeNeoGramAddon();
-
-  // ORIGINAL DEBUG TOOLS
 
   if (DEBUG) {
     document.addEventListener('dblclick', () => {
@@ -169,8 +161,6 @@ async function init() {
     });
   }
 }
-
-// NEOGRAM EVENT
 
 async function initializeNeoGramAddon() {
   const root = document.getElementById('root');
@@ -200,8 +190,6 @@ async function initializeNeoGramAddon() {
   }
 }
 
-// ORIGINAL PASSCODE ACTIONS
-
 async function loadPasscodeActions() {
   await Promise.all([
     loadBundle(Bundles.Main),
@@ -210,8 +198,6 @@ async function loadPasscodeActions() {
 
   return getActions();
 }
-
-// ORIGINAL CALL CLEANUP
 
 onBeforeUnload(() => {
   const actions = getActions();
