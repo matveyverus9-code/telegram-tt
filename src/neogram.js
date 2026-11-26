@@ -58,6 +58,7 @@ let root;
 let searchTimer;
 let toastTimer;
 let messagePollTimer;
+let messagesRequestChatId = '';
 let searchRequestNumber = 0;
 let gameTimer = null;
 
@@ -333,7 +334,7 @@ function renderStyles() {
     .ng-message.theirs{align-self:flex-start;border-bottom-left-radius:5px}
     .ng-message-author{margin-bottom:3px;font-size:12px;font-weight:700;opacity:.8}
     .ng-message-time{margin-top:4px;text-align:right;font-size:10px;opacity:.65}
-    .ng-composer{flex:0 0 auto;display:flex;align-items:flex-end;gap:8px;padding:9px 12px calc(9px + env(safe-area-inset-bottom));border-top:1px solid var(--ng-separator);background:var(--ng-glass);backdrop-filter:blur(20px)}
+    .ng-composer{flex:0 0 auto;display:flex;align-items:flex-end;gap:8px;padding:9px 12px 9px;border-top:1px solid var(--ng-separator);background:var(--ng-glass);backdrop-filter:blur(20px)}
     .ng-composer textarea{flex:1;min-height:38px;max-height:110px;resize:none;border:1px solid var(--ng-separator);border-radius:19px;outline:none;padding:9px 13px;color:var(--ng-text);background:var(--ng-card);font:inherit;line-height:20px}
     .ng-send{width:38px;height:38px;flex:0 0 38px;border:0;border-radius:50%;background:var(--ng-blue);color:white;font-size:18px;cursor:pointer}
     .ng-send:disabled{opacity:.45}
@@ -622,7 +623,7 @@ function bindMainActions() {
   root.querySelector('#ng-game-mode-mouse')?.addEventListener('click', () => setGameMode('mouse'));
 
   root.querySelectorAll('[data-theme]').forEach((button) => {
-    button.addEventListener('click', () => {
+      button.addEventListener('click', () => {
       state.settingsTheme = button.dataset.theme;
       localStorage.setItem(STORAGE.theme, state.settingsTheme);
       applyTheme();
@@ -1070,7 +1071,8 @@ function closeChat() {
 
 async function loadMessages(silent = false) {
   const chat = state.activeChat;
-  if (!chat) return;
+  if (!chat || messagesRequestChatId === chat.id) return;
+  messagesRequestChatId = chat.id;
   if (!silent) {
     state.loadingMessages = true;
     render();
@@ -1080,13 +1082,37 @@ async function loadMessages(silent = false) {
     if (state.activeChat?.id !== chat.id) return;
     state.messages = Array.isArray(result.messages) ? result.messages.slice().reverse() : [];
     state.loadingMessages = false;
-    renderChat(silent);
+    if (silent) updateMessagesOnly();
+    else renderChat();
   } catch (error) {
     state.loadingMessages = false;
     if (!silent) {
       showToast(error.message || 'Не удалось загрузить сообщения');
       renderChat();
     }
+  } finally {
+    if (messagesRequestChatId === chat.id) messagesRequestChatId = '';
+  }
+}
+
+/* Обновляем только список сообщений: поле ввода остаётся тем же DOM-элементом,
+   поэтому автопроверка не сбрасывает фокус, курсор и открытую клавиатуру. */
+function updateMessagesOnly() {
+  const container = root?.querySelector('#ng-messages');
+  if (!container) return;
+
+  const wasNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 100;
+  const previousHeight = container.scrollHeight;
+  const previousTop = container.scrollTop;
+  const html = state.messages.length
+    ? state.messages.map(renderMessage).join('')
+    : '<div class="ng-empty">Пока нет сообщений. Напиши первым!</div>';
+
+  container.innerHTML = html;
+  if (wasNearBottom) {
+    container.scrollTop = container.scrollHeight;
+  } else {
+    container.scrollTop = previousTop + (container.scrollHeight - previousHeight);
   }
 }
 
@@ -1153,7 +1179,8 @@ async function sendMessage() {
     await loadMessages(true);
     if (state.activeChat?.id === chat.id) {
       state.messageDraft = '';
-      renderChat(true);
+      const input = root.querySelector('#ng-message-input');
+      if (input) input.value = '';
     }
   } catch (error) {
     state.sendingMessage = false;
