@@ -25,12 +25,6 @@ jobs:
           node-version: "24.15.0"
           cache: npm
 
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "21"
-
       - name: Configure GitHub HTTPS
         run: |
           git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
@@ -51,6 +45,14 @@ jobs:
       - name: Create Android platform
         run: npx cap add android
 
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+          cache-dependency-path: android/gradle/wrapper/gradle-wrapper.properties
+
       - name: Sync Android
         run: npx cap sync android
 
@@ -58,11 +60,24 @@ jobs:
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug
+
+          for attempt in 1 2 3; do
+            if ./gradlew assembleDebug; then
+              exit 0
+            fi
+
+            echo "Gradle attempt $attempt failed"
+
+            if [ "$attempt" -lt 3 ]; then
+              sleep $((attempt * 30))
+            fi
+          done
+
+          exit 1
 
       - name: Verify APK
         run: |
-          test -f android/app/build/outputs/apk/debug/app-debug.apk
+          test -s android/app/build/outputs/apk/debug/app-debug.apk
 
       - name: Upload Android APK
         uses: actions/upload-artifact@v4
@@ -137,11 +152,15 @@ jobs:
 
           cp -R "$APP_PATH" Payload/App.app
 
-          cd Payload
-          zip -qry ../artifacts/NeoGram-unsigned.ipa Payload
-          cd ..
+          zip -qry artifacts/NeoGram-unsigned.ipa Payload
 
-          test -f artifacts/NeoGram-unsigned.ipa
+          test -s artifacts/NeoGram-unsigned.ipa
+
+          unzip -tq artifacts/NeoGram-unsigned.ipa
+
+          unzip -Z1 artifacts/NeoGram-unsigned.ipa | grep -q '^Payload/App\.app/'
+
+          echo "IPA successfully packaged and verified"
 
       - name: Upload unsigned IPA
         uses: actions/upload-artifact@v4
