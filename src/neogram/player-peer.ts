@@ -1,7 +1,6 @@
 
 import {
   attachNeoGramDecorations,
-  normalizeNeoGramDecorations,
   type NeoGramDecoratedPeer,
   type NeoGramPlayerDecorations,
 } from './player-decorations';
