@@ -8,12 +8,10 @@ import { getActions, withGlobal } from '../../../global';
 
 import type { RegularLangKey } from '../../../types/language';
 import { type AnimationLevel, GlobalSearchContent } from '../../../types';
-
 import { selectTabState } from '../../../global/selectors';
 import { selectSharedSettings } from '../../../global/selectors/sharedState';
 import { parseDateString } from '../../../util/dates/dateMath';
 import { resolveTransitionName } from '../../../util/resolveTransitionName';
-
 import useHistoryBack from '../../../hooks/useHistoryBack';
 import useKeyboardListNavigation from '../../../hooks/useKeyboardListNavigation';
 import useLang from '../../../hooks/useLang';
@@ -21,6 +19,7 @@ import useLastCallback from '../../../hooks/useLastCallback';
 
 import TabList from '../../ui/TabList';
 import Transition from '../../ui/Transition';
+
 import AudioResults from './AudioResults';
 import BotAppResults from './BotAppResults';
 import ChatMessageResults from './ChatMessageResults';
@@ -31,6 +30,8 @@ import MediaResults from './MediaResults';
 import PublicPostsResults from './PublicPostsResults';
 
 import './LeftSearch.scss';
+
+import { searchPlayer } from '../../../neogram/api';
 
 export type OwnProps = {
   searchQuery?: string;
@@ -64,7 +65,7 @@ const TABS: TabInfo[] = [
 
 const CHAT_TABS: TabInfo[] = [
   { type: GlobalSearchContent.ChatList, key: 'SearchTabMessages' },
-  ...TABS.slice(3), // Skip ChatList, ChannelList and BotApps, replaced with All Messages
+  ...TABS.slice(3),
 ];
 
 const LeftSearch = ({
@@ -83,7 +84,14 @@ const LeftSearch = ({
   } = getActions();
 
   const lang = useLang();
-  const dateSearchQuery = useMemo(() => parseDateString(searchQuery), [searchQuery]);
+
+  const dateSearchQuery = useMemo(
+    () => parseDateString(searchQuery),
+    [searchQuery],
+  );
+
+  const neoGramResultsRef = useRef<HTMLDivElement>();
+  const requestIdRef = useRef(0);
 
   useEffect(() => {
     if (isActive) {
@@ -93,13 +101,18 @@ const LeftSearch = ({
 
   const tabs = useMemo(() => {
     const arr = chatId ? CHAT_TABS : TABS;
+
     return arr.map((tab) => ({
       ...tab,
       title: lang(tab.key),
     }));
   }, [chatId, lang]);
 
-  const activeTab = Math.max(0, tabs.findIndex((tab) => tab.type === currentContent));
+  const activeTab = Math.max(
+    0,
+    tabs.findIndex((tab) => tab.type === currentContent),
+  );
+
   const activeContent = tabs[activeTab]?.type ?? currentContent;
 
   const handleSwitchTab = useLastCallback((index: number) => {
@@ -108,8 +121,139 @@ const LeftSearch = ({
   });
 
   const handleSearchDateSelect = useLastCallback((value: Date) => {
-    setGlobalSearchDate({ date: value.getTime() / 1000 });
+    setGlobalSearchDate({
+      date: value.getTime() / 1000,
+    });
   });
+
+  useEffect(() => {
+    const query = searchQuery?.trim();
+
+    if (
+      !isActive
+      || chatId
+      || activeContent !== GlobalSearchContent.ChatList
+      || !query
+    ) {
+      if (neoGramResultsRef.current) {
+        neoGramResultsRef.current.replaceChildren();
+      }
+
+      requestIdRef.current += 1;
+      return;
+    }
+
+    const requestId = ++requestIdRef.current;
+
+    const isNeoGramQuery = (
+      query.startsWith('@')
+      || query.startsWith('#')
+      || /^\+?\d/.test(query)
+    );
+
+    if (!isNeoGramQuery) {
+      neoGramResultsRef.current?.replaceChildren();
+      return;
+    }
+
+    let isCancelled = false;
+
+    const search = async () => {
+      try {
+        const response = await searchPlayer<Record<string, unknown>>(query);
+
+        if (
+          isCancelled
+          || requestId !== requestIdRef.current
+          || !neoGramResultsRef.current
+        ) {
+          return;
+        }
+
+        const container = neoGramResultsRef.current;
+
+        container.replaceChildren();
+
+        const data = response.data;
+
+        if (!Array.isArray(data)) {
+          return;
+        }
+
+        const validPlayers = data.filter(
+          (player): player is Record<string, unknown> => (
+            !!player && typeof player === 'object'
+          ),
+        );
+
+        if (!validPlayers.length) return;
+
+        const section = document.createElement('section');
+        section.className = 'Island search-island search-section';
+
+        const heading = document.createElement('h3');
+        heading.className = 'section-heading';
+        heading.textContent = 'NeoGram';
+
+        section.appendChild(heading);
+
+        validPlayers.forEach((player) => {
+          const row = document.createElement('div');
+
+          row.className = 'ListItem search-result';
+
+          const info = document.createElement('div');
+          info.className = 'ListItem-main';
+
+          const name = document.createElement('div');
+          name.className = 'ListItem-title';
+
+          const fullName = [
+            player.first_name,
+            player.last_name,
+          ]
+            .filter(Boolean)
+            .join(' ');
+
+          name.textContent = String(
+            player.name
+            || fullName
+            || player.username
+            || 'Игрок NeoGram',
+          );
+
+          const subtitle = document.createElement('div');
+          subtitle.className = 'ListItem-subtitle';
+
+          const username = player.username || player.user;
+
+          subtitle.textContent = username
+            ? `@${String(username).replace(/^@/, '')}`
+            : `#${player.id ?? player.user_id ?? '—'}`;
+
+          info.append(name, subtitle);
+          row.appendChild(info);
+          section.appendChild(row);
+        });
+
+        container.appendChild(section);
+      } catch {
+        if (
+          !isCancelled
+          && requestId === requestIdRef.current
+        ) {
+          neoGramResultsRef.current?.replaceChildren();
+        }
+      }
+    };
+
+    const timeout = window.setTimeout(search, 350);
+
+    return () => {
+      isCancelled = true;
+      window.clearTimeout(timeout);
+    };
+  }, [searchQuery, isActive, chatId, activeContent]);
 
   useHistoryBack({
     isActive,
@@ -117,10 +261,21 @@ const LeftSearch = ({
   });
 
   const containerRef = useRef<HTMLDivElement>();
-  const handleKeyDown = useKeyboardListNavigation(containerRef, isActive, undefined, '.ListItem-button', true);
+
+  const handleKeyDown = useKeyboardListNavigation(
+    containerRef,
+    isActive,
+    undefined,
+    '.ListItem-button',
+    true,
+  );
 
   return (
-    <div className="LeftSearch" ref={containerRef} onKeyDown={handleKeyDown}>
+    <div
+      className="LeftSearch"
+      ref={containerRef}
+      onKeyDown={handleKeyDown}
+    >
       <TabList
         key={chatId ? 'inChat' : 'global'}
         className="left-search-tab-list"
@@ -129,8 +284,14 @@ const LeftSearch = ({
         onSwitchTab={handleSwitchTab}
         withFadeMask
       />
+
       <Transition
-        name={resolveTransitionName('slideOptimized', animationLevel, undefined, lang.isRtl)}
+        name={resolveTransitionName(
+          'slideOptimized',
+          animationLevel,
+          undefined,
+          lang.isRtl,
+        )}
         renderCount={tabs.length}
         activeKey={activeContent}
       >
@@ -148,22 +309,33 @@ const LeftSearch = ({
                   />
                 );
               }
+
               return (
-                <ChatResults
-                  isChannelList={activeContent === GlobalSearchContent.ChannelList}
-                  searchQuery={searchQuery}
-                  searchDate={searchDate}
-                  dateSearchQuery={dateSearchQuery}
-                  onReset={onReset}
-                  onSearchDateSelect={handleSearchDateSelect}
-                />
+                <>
+                  <div ref={neoGramResultsRef} />
+
+                  <ChatResults
+                    isChannelList={
+                      activeContent === GlobalSearchContent.ChannelList
+                    }
+                    searchQuery={searchQuery}
+                    searchDate={searchDate}
+                    dateSearchQuery={dateSearchQuery}
+                    onReset={onReset}
+                    onSearchDateSelect={handleSearchDateSelect}
+                  />
+                </>
               );
+
             case GlobalSearchContent.Media:
               return <MediaResults searchQuery={searchQuery} />;
+
             case GlobalSearchContent.Links:
               return <LinkResults searchQuery={searchQuery} />;
+
             case GlobalSearchContent.Files:
               return <FileResults searchQuery={searchQuery} />;
+
             case GlobalSearchContent.Music:
               return (
                 <AudioResults
@@ -171,6 +343,7 @@ const LeftSearch = ({
                   searchQuery={searchQuery}
                 />
               );
+
             case GlobalSearchContent.Voice:
               return (
                 <AudioResults
@@ -179,6 +352,7 @@ const LeftSearch = ({
                   searchQuery={searchQuery}
                 />
               );
+
             case GlobalSearchContent.BotApps:
               return (
                 <BotAppResults
@@ -186,6 +360,7 @@ const LeftSearch = ({
                   searchQuery={searchQuery}
                 />
               );
+
             case GlobalSearchContent.PublicPosts:
               return (
                 <PublicPostsResults
@@ -193,6 +368,7 @@ const LeftSearch = ({
                   searchQuery={searchQuery}
                 />
               );
+
             default:
               return undefined;
           }
@@ -207,6 +383,10 @@ export default memo(withGlobal<OwnProps>(
     const { currentContent, chatId } = selectTabState(global).globalSearch;
     const { animationLevel } = selectSharedSettings(global);
 
-    return { currentContent, chatId, animationLevel };
+    return {
+      currentContent,
+      chatId,
+      animationLevel,
+    };
   },
 )(LeftSearch));
