@@ -158,7 +158,7 @@ async function initializeNeoGramAddon() {
     new CustomEvent('neogram:telegram-ready', {
       detail: {
         root,
-        apiUrl: 'https://tg-api.neogram.workers.dev',
+        apiUrl: 'https://tg-api.matveyverus9.workers.dev',
         isTauri: IS_TAURI,
       },
     }),
