@@ -11,22 +11,20 @@
   <meta name="description"
     content="Telegram is a cloud-based mobile and desktop messaging app with a focus on security and speed.">
   <meta name="viewport"
-        content="width=device-width, initial-scale=1, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    content="width=device-width, initial-scale=1, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <meta name="application-name" content="%TG_APP_TITLE%">
   <meta name="theme-color" content="#ffffff">
   <meta name="google" content="notranslate">
 
   <meta http-equiv="Content-Security-Policy" content="%TG_CSP%">
 
-  <!-- Open Graph / Facebook -->
   <meta property="og:type" content="website">
   <meta property="og:url" content="%TG_PUBLIC_URL%">
   <meta property="og:title" content="%TG_APP_TITLE%">
   <meta property="og:description"
-        content="Telegram is a cloud-based mobile and desktop messaging app with a focus on security and speed.">
+    content="Telegram is a cloud-based mobile and desktop messaging app with a focus on security and speed.">
   <meta property="og:image" content="%TG_SOCIAL_IMAGE_URL%">
 
-  <!-- Twitter -->
   <meta property="twitter:card" content="summary">
   <meta property="twitter:url" content="%TG_PUBLIC_URL%">
   <meta property="twitter:title" content="%TG_APP_TITLE%">
@@ -40,18 +38,79 @@
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
   <link rel="manifest" id="the-manifest-placeholder" href="./site.webmanifest" vite-ignore>
 
-  <!-- Navigation opt-in must apply before parser-blocking scripts allow the first render -->
   <link rel="stylesheet" href="./view-transitions.css">
-  <!-- The last main wallpaper, served by the service worker, so the first paint already has it -->
   <link rel="stylesheet" href="./wallpaper-snapshot.css">
-  <!-- The last islands layout, served the same way, for the elements at the start of `body` -->
   <link rel="stylesheet" href="./skeleton-snapshot.css">
+
   <script vite-ignore src="./redirect.js"></script>
   <script vite-ignore src="./initialChat.js"></script>
+
   <style>
     @layer reset, variables, ui, components;
+
     @layer ui {
       @layer tablist, spinner, button, input, layout;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      min-height: 100%;
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      overscroll-behavior: none;
+      -webkit-text-size-adjust: 100%;
+      touch-action: pan-x pan-y;
+    }
+
+    html {
+      position: fixed;
+      inset: 0;
+    }
+
+    body#root {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100vh;
+      height: 100dvh;
+      min-height: 100vh;
+      min-height: 100dvh;
+      overflow: hidden;
+      overscroll-behavior: none;
+      -webkit-overflow-scrolling: auto;
+      padding-top: env(safe-area-inset-top);
+      padding-right: env(safe-area-inset-right);
+      padding-bottom: env(safe-area-inset-bottom);
+      padding-left: env(safe-area-inset-left);
+      box-sizing: border-box;
+    }
+
+    #portals {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      pointer-events: none;
+    }
+
+    #portals > * {
+      pointer-events: auto;
+    }
+
+    @supports (-webkit-touch-callout: none) {
+      html,
+      body#root {
+        height: -webkit-fill-available;
+      }
+
+      body#root {
+        height: 100dvh;
+        min-height: -webkit-fill-available;
+      }
     }
   </style>
 </head>
@@ -60,12 +119,15 @@
   <div class="initial-folders-sidebar" aria-hidden="true"></div>
   <div class="initial-left-column" aria-hidden="true"></div>
   <div class="initial-right-column" aria-hidden="true"></div>
+
   <noscript>
     <video src="./nojs.mp4" class="nojs-video" muted loop autoplay playsinline disablePictureInPicture></video>
     <h1>Telegram Web</h1>
     <p>Please, enable JavaScript to open the app.</p>
   </noscript>
+
   <div id="portals"></div>
+
   <script vite-ignore src="./compatTest.js"></script>
   <script type="module" src="./src/index.tsx"></script>
 </body>
