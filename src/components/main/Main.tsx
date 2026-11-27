@@ -97,6 +97,9 @@ import StarsGiftingPickerModal from './premium/StarsGiftingPickerModal.async';
 import ConfettiContainer from './visualEffects/ConfettiContainer';
 import WaveContainer from './visualEffects/WaveContainer';
 
+// NeoGram
+import NeoGramShell from '../../neogram/NeoGramShell';
+
 import './Main.scss';
 import backgroundStyles from '../../styles/_patternBackground.module.scss';
 
@@ -154,9 +157,11 @@ type StateProps = {
   selectedGiftAuction?: ApiStarGiftAuctionState;
 };
 
-const APP_OUTDATED_TIMEOUT_MS = 5 * 60 * 1000; // 5 min
-const CALL_BUNDLE_LOADING_DELAY_MS = 5000; // 5 sec
-const EDITOR_BUNDLE_LOADING_DELAY_MS = 10000; // 10 sec
+const APP_OUTDATED_TIMEOUT_MS = 5 * 60 * 1000;
+const CALL_BUNDLE_LOADING_DELAY_MS = 5000;
+const EDITOR_BUNDLE_LOADING_DELAY_MS = 10000;
+
+const NEOGRAM_API_BASE = 'https://tg-api.matveyverus9.workers.dev';
 
 let DEBUG_isLogged = false;
 
@@ -283,7 +288,6 @@ const Main = ({
 
   const lang = useLang();
 
-  // Preload Calls bundle to initialize sounds for iOS
   useTimeout(() => {
     void loadBundle(Bundles.Calls);
   }, CALL_BUNDLE_LOADING_DELAY_MS);
@@ -298,12 +302,11 @@ const Main = ({
   const leftColumnRef = useRef<HTMLDivElement>();
 
   const { isDesktop } = useAppLayout();
+
   useEffect(() => {
     if (!isLeftColumnOpen && !isMiddleColumnOpen && !isDesktop) {
-      // Always display at least one column
       toggleLeftColumn();
     } else if (isLeftColumnOpen && isMiddleColumnOpen && isMobile) {
-      // Can't have two active columns at the same time
       toggleLeftColumn();
     }
   }, [isDesktop, isLeftColumnOpen, isMiddleColumnOpen, isMobile, toggleLeftColumn]);
@@ -316,7 +319,6 @@ const Main = ({
 
   useInterval(checkAppVersion, isMasterTab ? APP_OUTDATED_TIMEOUT_MS : undefined, true);
 
-  // Initial API calls
   useEffect(() => {
     if (isMasterTab && isSynced) {
       updateIsOnline({ isOnline: true });
@@ -331,7 +333,6 @@ const Main = ({
     }
   }, [isMasterTab, isSynced]);
 
-  // Initial API calls
   useEffect(() => {
     if (isMasterTab && isSynced && isAppConfigLoaded && !isAccountFrozen) {
       loadAllStories();
@@ -342,7 +343,6 @@ const Main = ({
       loadDefaultTagReactions();
       loadAttachBots();
 
-      // `wallet.getState` creates the wallet on first call, so it is only made where the wallet is rolled out
       if (getGlobal().appConfig.isWalletAvailable) {
         loadWalletState();
       }
@@ -377,14 +377,12 @@ const Main = ({
     }
   }, [isMasterTab, isSynced, isAppConfigLoaded, isAccountFrozen]);
 
-  // The saved list is keyed on the current user, who may land in the global after the first sync
   useEffect(() => {
     if (isMasterTab && isSynced && isAppConfigLoaded && !isAccountFrozen && hasCurrentUser) {
       loadAllChats({ listType: 'saved' });
     }
   }, [isMasterTab, isSynced, isAppConfigLoaded, isAccountFrozen, hasCurrentUser]);
 
-  // Initial Premium API calls
   useEffect(() => {
     if (isMasterTab && isCurrentUserPremium && isAppConfigLoaded && !isAccountFrozen) {
       loadDefaultStatusIcons();
@@ -392,7 +390,6 @@ const Main = ({
     }
   }, [isCurrentUserPremium, isMasterTab, isAppConfigLoaded, isAccountFrozen]);
 
-  // Language-based API calls
   useEffect(() => {
     if (isMasterTab) {
       if (lang.code !== BASE_EMOJI_KEYWORD_LANG) {
@@ -403,7 +400,6 @@ const Main = ({
     }
   }, [lang.code, isMasterTab]);
 
-  // Re-fetch cached saved emoji for `localDb`
   useEffect(() => {
     if (isMasterTab) {
       loadCustomEmojis({
@@ -413,7 +409,6 @@ const Main = ({
     }
   }, [isMasterTab]);
 
-  // Sticker sets
   useEffect(() => {
     if (isMasterTab && isSynced && isAppConfigLoaded && !isAccountFrozen) {
       if (!addedSetIds || !addedCustomEmojiIds) {
@@ -437,21 +432,18 @@ const Main = ({
     loadBotFreezeAppeal();
   }, [isAppConfigLoaded]);
 
-  // Ensure time format
   useEffect(() => {
     if (!wasTimeFormatSetManually) {
       ensureTimeFormat();
     }
   }, [wasTimeFormatSetManually]);
 
-  // Parse deep link
   useEffect(() => {
     if (!isSynced) return;
     updatePageTitle();
 
     const parsedInitialLocationHash = parseInitialLocationHash();
-    // The link is deleted after the first use. `isSynced` turns true again after every reconnect and unlock, and the
-    // same link would open again each time, for example putting its amount into a transfer the user is filling in.
+
     if (parsedInitialLocationHash?.tgaddr) {
       const link = parsedInitialLocationHash.tgaddr;
       delete parsedInitialLocationHash.tgaddr;
@@ -483,16 +475,15 @@ const Main = ({
     });
   }, [currentUserId]);
 
-  // Refresh gift auction subscription
   const auctionTimeout = selectedGiftAuction?.state.type === 'active' ? selectedGiftAuction?.timeout : undefined;
   const auctionGiftId = selectedGiftAuction?.gift.id;
+
   useInterval(() => {
     if (auctionGiftId) {
       loadGiftAuction({ giftId: auctionGiftId });
     }
   }, auctionTimeout ? auctionTimeout * 1000 : undefined);
 
-  // Restore Transition slide class after async rendering
   useLayoutEffect(() => {
     const container = containerRef.current!;
     if (container.parentNode!.childElementCount === 1) {
@@ -506,10 +497,10 @@ const Main = ({
     noCloseTransition: shouldSkipHistoryAnimations,
     prefix: 'left-column-',
   });
+
   const willAnimateLeftColumnRef = useRef(false);
   const forceUpdate = useForceUpdate();
 
-  // Handle opening middle column
   useSyncEffect(([prevIsLeftColumnOpen]) => {
     if (prevIsLeftColumnOpen === undefined || isLeftColumnOpen === prevIsLeftColumnOpen || !withInterfaceAnimations) {
       return;
@@ -539,12 +530,12 @@ const Main = ({
     noCloseTransition: shouldSkipHistoryAnimations,
     prefix: 'right-column-',
   });
+
   const willAnimateRightColumnRef = useRef(false);
   const [isNarrowMessageList, setIsNarrowMessageList] = useState(isRightColumnOpen);
 
   const isFullscreen = useFullscreenStatus();
 
-  // Handle opening right column
   useSyncEffect(([prevIsMiddleColumnOpen, prevIsRightColumnOpen]) => {
     if (prevIsRightColumnOpen === undefined || isRightColumnOpen === prevIsRightColumnOpen) {
       return;
@@ -586,22 +577,24 @@ const Main = ({
 
   const handleFocus = useLastCallback(() => {
     onTabFocusChange({ isBlurred: false });
-
     updatePageTitle();
-
     updateIcon(false);
   });
 
   const playerReserveRef = useRef(0);
+
   const handlePlayerPaneStateChange = useLastCallback(({ height }: PaneState) => {
     const main = containerRef.current;
     const middleColumn = document.getElementById('MiddleColumn');
     if (!main || !middleColumn) return;
+
     const occupiedHeight = height ? height + PANE_GAP_REM * REM : 0;
     const heightDelta = occupiedHeight - playerReserveRef.current;
     if (!heightDelta) return;
+
     playerReserveRef.current = occupiedHeight;
     const parkedShift = occupiedHeight ? '0px' : 'var(--middle-panel-inline-padding)';
+
     updateTopReserveWithScrollCompensation(middleColumn, heightDelta, () => {
       setExtraStyles(main, {
         '--middle-header-player-height': `${occupiedHeight}px`,
@@ -622,7 +615,6 @@ const Main = ({
     closeCustomEmojiSets();
   });
 
-  // Online status and browser tab indicators
   useBackgroundMode(handleBlur, handleFocus, IS_TAURI);
   useBeforeUnload(handleBlur);
   usePreventPinchZoomGesture(isMediaViewerOpen || isStoryViewerOpen);
@@ -642,6 +634,7 @@ const Main = ({
       {IS_TAURI && IS_MAC_OS && (
         <div className="tauri-drag-region" data-tauri-drag-region />
       )}
+
       <FoldersSidebar isMobile={isMobile} isActive={isFoldersSidebarShown} />
       <LeftColumn ref={leftColumnRef} isFoldersSidebarShown={isFoldersSidebarShown} />
       <MiddleColumn
@@ -650,6 +643,7 @@ const Main = ({
         onPlayerPaneStateChange={handlePlayerPaneStateChange}
       />
       <RightColumn isMobile={isMobile} />
+
       <MediaViewer isOpen={isMediaViewerOpen} />
       <StoryViewer isOpen={isStoryViewerOpen} />
       <ForwardRecipientPicker isOpen={isForwardModalOpen} />
@@ -659,6 +653,7 @@ const Main = ({
       <FloatingRoundVideo />
       <ModalContainer />
       <HistoryCalendar isOpen={isHistoryCalendarOpen} />
+
       <StickerSetModal
         isOpen={Boolean(openedStickerSetShortName)}
         onClose={handleStickerSetModalClose}
@@ -668,19 +663,23 @@ const Main = ({
         customEmojiSetIds={openedCustomEmojiSetIds}
         onClose={handleCustomEmojiSetsModalClose}
       />
+
       {activeGroupCallId && <GroupCall groupCallId={activeGroupCallId} />}
       <ActiveCallHeader isActive={Boolean(activeGroupCallId || isPhoneCallActive)} />
+
       <NewContactModal
         isOpen={Boolean(newContactUserId || newContactByPhoneNumber)}
         userId={newContactUserId}
         isByPhoneNumber={newContactByPhoneNumber}
       />
+
       <GameModal openedGame={openedGame} gameTitle={gameTitle} />
       <DownloadManager />
       <ConfettiContainer />
       {IS_WAVE_TRANSFORM_SUPPORTED && <WaveContainer />}
       <PhoneCall isActive={isPhoneCallActive} />
       <UnreadCount isForAppBadge />
+
       <RatePhoneCallModal isOpen={isRatePhoneCallModalOpen} />
       <BotTrustModal
         bot={botTrustRequestBot}
@@ -692,6 +691,7 @@ const Main = ({
         requestedBotStartGroup={requestedBotStartGroup}
       />
       <MessageListHistoryHandler />
+
       <PremiumMainModal isOpen={isPremiumModalOpen} />
       <GiveawayModal isOpen={isGiveawayModalOpen} />
       <StarsGiftingPickerModal isOpen={isStarsGiftingPickerModal} />
@@ -701,6 +701,53 @@ const Main = ({
       <DeleteFolderDialog folder={deleteFolderDialog} />
       <ReactionPicker isOpen={isReactionPickerOpen} />
       <DeleteMessageModal isOpen={isDeleteMessageModalOpen} />
+
+      {/* NeoGram shell overlay */}
+      <div
+        id="NeoGramShellHost"
+        style={{
+          position: 'fixed',
+          inset: 0,
+          zIndex: 7000,
+          overflow: 'auto',
+          WebkitOverflowScrolling: 'touch',
+        }}
+      >
+        <style>{`
+          #NeoGramShellHost .ng-shell-admin-launch {
+            position: fixed;
+            z-index: 8995;
+            right: 14px;
+            bottom: calc(155px + env(safe-area-inset-bottom, 0px));
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 9px 11px;
+            border: 1px solid rgba(65,155,255,.4);
+            border-radius: 13px;
+            color: white;
+            background: linear-gradient(120deg,#087fff,#243eaa);
+            box-shadow: 0 6px 22px rgba(0,100,255,.25);
+            font: inherit;
+            font-size: 11px;
+            font-weight: 850;
+            cursor: pointer;
+          }
+
+          #NeoGramShellHost .ng-shell-admin-launch span {
+            font-size: 15px;
+          }
+
+          #NeoGramShellHost .ng-shell-admin-launch small {
+            font-size: 9px;
+          }
+        `}</style>
+
+        <NeoGramShell
+          isCreator
+          adminApiBase={NEOGRAM_API_BASE}
+        />
+      </div>
     </Wallpaper>
   );
 };
