@@ -1,246 +1,181 @@
+
 import {
-  memo, useEffect, useLayoutEffect, useMemo, useRef, useState,
+  memo, useEffect, useState,
 } from '../../lib/teact/teact';
-import { getActions, withGlobal } from '../../global';
 
-import type { ApiCountryCode } from '../../api/types';
-import type { GlobalState } from '../../global/types';
-
-import { requestMeasure } from '../../lib/fasterdom/fasterdom';
-import { IS_SAFARI, IS_TOUCH_ENV } from '../../util/browser/windowEnvironment';
-import { preloadImage } from '../../util/files';
-import preloadFonts from '../../util/fonts';
-import { loadAndChangeLanguage } from '../../util/localization';
-import { getAccountSlotUrl } from '../../util/multiaccount';
-import { formatPhoneNumber, getCountryCodeByIso, getCountryFromPhoneNumber } from '../../util/phoneNumber';
 import { navigateBack } from './helpers/backNavigation';
-import { getSuggestedLanguage } from './helpers/getSuggestedLanguage';
 
-import useFlag from '../../hooks/useFlag';
 import useLang from '../../hooks/useLang';
-import useLangString from '../../hooks/useLangString';
-import useLastCallback from '../../hooks/useLastCallback';
 import useMultiaccountInfo from '../../hooks/useMultiaccountInfo';
 
 import Button from '../ui/Button';
-import Checkbox from '../ui/Checkbox';
 import InputText from '../ui/InputText';
 import Loading from '../ui/Loading';
-import CountryCodeInput from './CountryCodeInput';
 
-import monkeyPath from '../../assets/monkey.svg';
+import {
+  authenticate,
+  checkPhoneNumber,
+  generatePhoneNumbers,
+  normalizePhone,
+} from '../../neogram/api';
 
-type StateProps = {
-  auth: GlobalState['auth'];
-  connectionState: GlobalState['connectionState'];
-  language?: string;
-  phoneCodeList: ApiCountryCode[];
-  isTestServer?: boolean;
-};
+import type {
+  NeoGramAuthResponse,
+  NeoGramPhoneNumber,
+} from '../../neogram/api';
 
-const MIN_NUMBER_LENGTH = 7;
+type AuthStep = 'phone' | 'pin';
 
-let isPreloadInitiated = false;
+const PIN_LENGTH = 4;
 
-const AuthPhoneNumber = ({
-  auth,
-  connectionState,
-  phoneCodeList,
-  language,
-  isTestServer,
-}: StateProps) => {
-  const {
-    setAuthPhoneNumber,
-    setAuthRememberMe,
-    loadNearestCountry,
-    loadCountryList,
-    clearAuthErrorKey,
-    goToAuthQrCode,
-    setSharedSettingOption,
-    loginWithPasskey,
-  } = getActions();
+function getErrorMessage(error: unknown): string {
+  const code = error instanceof Error ? error.message : '';
 
-  const {
-    state,
-    phoneNumber: authPhoneNumber,
-    nearestCountry,
-    isLoading: authIsLoading,
-    errorKey,
-    rememberMe,
-    isLoadingQrCode,
-    passkeyOption,
-  } = auth;
+  switch (code) {
+    case 'NEOGRAM_SERVER_UNAVAILABLE':
+      return 'Не удалось подключиться к серверу. Проверьте интернет и попробуйте ещё раз.';
+    case 'PHONE_LIST_UNAVAILABLE':
+    case 'PHONE_GENERATION_FAILED':
+      return 'Не удалось получить номера. Попробуйте обновить список.';
+    case 'INVALID_PHONE':
+      return 'Неверный номер NeoGram.';
+    case 'INVALID_PIN':
+      return 'PIN должен состоять из четырёх цифр.';
+    case 'INVALID_CREDENTIALS':
+    case 'INVALID_PIN_CODE':
+    case 'WRONG_PIN':
+      return 'Неверный PIN. Проверьте код и попробуйте снова.';
+    case 'PHONE_NOT_RESERVED':
+    case 'RESERVATION_EXPIRED':
+      return 'Резерв номера истёк. Получите новый номер.';
+    case 'RATE_LIMITED':
+      return 'Слишком много попыток. Немного подождите и попробуйте снова.';
+    default:
+      return code
+        ? `Не удалось выполнить вход: ${code}`
+        : 'Произошла ошибка. Попробуйте ещё раз.';
+  }
+}
 
+const AuthPhoneNumber = () => {
   const lang = useLang();
-  const inputRef = useRef<HTMLInputElement>();
-  const suggestedLanguage = getSuggestedLanguage();
-
-  const isConnected = connectionState === 'connectionStateReady';
-  const continueText = useLangString('AuthContinueOnThisLanguage', suggestedLanguage);
-  const [country, setCountry] = useState<ApiCountryCode | undefined>();
-  const [phoneNumber, setPhoneNumber] = useState<string | undefined>();
-  const [isTouched, setIsTouched] = useState(false);
-  const [lastSelection, setLastSelection] = useState<[number, number] | undefined>();
-  const [isLoading, markIsLoading, unmarkIsLoading] = useFlag();
-
   const accountsInfo = useMultiaccountInfo();
   const hasActiveAccount = Object.values(accountsInfo).length > 0;
-  const phoneNumberSlots = useMemo(() => (
-    Object.entries(accountsInfo)
-      .filter(([, info]) => info.isTest === isTestServer)
-      .reduce((acc, [key, { phone }]) => {
-        if (phone) acc[phone] = Number(key);
-        return acc;
-      }, {} as Record<string, number>)
-  ), [accountsInfo, isTestServer]);
 
-  const fullNumber = country ? `+${country.countryCode} ${phoneNumber || ''}` : phoneNumber;
-  const canSubmit = fullNumber && fullNumber.replace(/[^\d]+/g, '').length >= MIN_NUMBER_LENGTH;
-
-  useEffect(() => {
-    if (!IS_TOUCH_ENV) {
-      inputRef.current!.focus();
-    }
-  }, [country]);
+  const [numbers, setNumbers] = useState<NeoGramPhoneNumber[]>([]);
+  const [selectedPhone, setSelectedPhone] = useState('');
+  const [step, setStep] = useState<AuthStep>('phone');
+  const [pin, setPin] = useState('');
+  const [isLoadingNumbers, setIsLoadingNumbers] = useState(true);
+  const [isCheckingPhone, setIsCheckingPhone] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState('');
+  const [phoneCheckMessage, setPhoneCheckMessage] = useState('');
 
   useEffect(() => {
-    if (isConnected && !nearestCountry) {
-      loadNearestCountry();
+    let isMounted = true;
+
+    async function loadNumbers() {
+      setIsLoadingNumbers(true);
+      setError('');
+
+      try {
+        const result = await generatePhoneNumbers();
+
+        if (isMounted) {
+          setNumbers(result);
+        }
+      } catch (loadError) {
+        if (isMounted) {
+          setError(getErrorMessage(loadError));
+        }
+      } finally {
+        if (isMounted) {
+          setIsLoadingNumbers(false);
+        }
+      }
     }
-  }, [isConnected, nearestCountry]);
 
-  useEffect(() => {
-    if (isConnected) {
-      loadCountryList({ langCode: lang.code });
-    }
-  }, [isConnected, lang.code]);
+    void loadNumbers();
 
-  useEffect(() => {
-    if (nearestCountry && phoneCodeList && !country && !isTouched) {
-      setCountry(getCountryCodeByIso(phoneCodeList, nearestCountry));
-    }
-  }, [country, nearestCountry, isTouched, phoneCodeList]);
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
-  const parseFullNumber = useLastCallback((newFullNumber: string) => {
-    if (!newFullNumber.length) {
-      setPhoneNumber('');
+  async function handleSelectPhone(phone: string) {
+    if (isCheckingPhone || isSubmitting) {
+      return;
     }
 
-    const suggestedCountry = phoneCodeList && getCountryFromPhoneNumber(phoneCodeList, newFullNumber);
+    const normalizedPhone = normalizePhone(phone);
 
-    // Any phone numbers should be allowed, in some cases ignoring formatting
-    const selectedCountry = !country
-      || (suggestedCountry && suggestedCountry.iso2 !== country.iso2)
-      || (!suggestedCountry && newFullNumber.length)
-      ? suggestedCountry
-      : country;
-
-    if (!country || !selectedCountry || (selectedCountry && selectedCountry.iso2 !== country.iso2)) {
-      setCountry(selectedCountry);
-    }
-    setPhoneNumber(formatPhoneNumber(newFullNumber, selectedCountry));
-  });
-
-  const handleLangChange = useLastCallback(async () => {
-    markIsLoading();
+    setSelectedPhone(normalizedPhone);
+    setError('');
+    setPhoneCheckMessage('');
+    setIsCheckingPhone(true);
 
     try {
-      if (await loadAndChangeLanguage(suggestedLanguage)) {
-        setSharedSettingOption({ language: suggestedLanguage });
+      const result = await checkPhoneNumber(normalizedPhone);
+
+      if (result.exists) {
+        setPhoneCheckMessage('Аккаунт найден. Введите PIN для входа.');
+      } else if (result.can_register || result.reserved) {
+        setPhoneCheckMessage('Номер готов к регистрации. Придумайте PIN для аккаунта.');
+      } else {
+        setPhoneCheckMessage('Введите PIN, чтобы продолжить.');
       }
+
+      setPin('');
+      setStep('pin');
+    } catch (checkError) {
+      setError(getErrorMessage(checkError));
     } finally {
-      unmarkIsLoading();
-    }
-  });
-
-  useEffect(() => {
-    if (phoneNumber === undefined && authPhoneNumber) {
-      parseFullNumber(authPhoneNumber);
-    }
-  }, [authPhoneNumber, phoneNumber, parseFullNumber]);
-
-  useLayoutEffect(() => {
-    if (inputRef.current && lastSelection) {
-      inputRef.current.setSelectionRange(...lastSelection);
-    }
-  }, [lastSelection]);
-
-  const isJustPastedRef = useRef(false);
-  const handlePaste = useLastCallback(() => {
-    isJustPastedRef.current = true;
-    requestMeasure(() => {
-      isJustPastedRef.current = false;
-    });
-  });
-
-  const handleBackNavigation = useLastCallback(() => {
-    navigateBack();
-  });
-
-  const handleCountryChange = useLastCallback((value: ApiCountryCode) => {
-    setCountry(value);
-    setPhoneNumber('');
-  });
-
-  const handlePhoneNumberChange = useLastCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    if (errorKey) {
-      clearAuthErrorKey();
-    }
-
-    // This is for further screens. We delay it until user input to speed up the initial loading.
-    if (!isPreloadInitiated) {
-      isPreloadInitiated = true;
-      preloadFonts();
-      void preloadImage(monkeyPath);
-    }
-
-    const { value, selectionStart, selectionEnd } = e.target;
-    setLastSelection(
-      selectionStart && selectionEnd && selectionEnd < value.length
-        ? [selectionStart, selectionEnd]
-        : undefined,
-    );
-
-    setIsTouched(true);
-
-    const shouldFixSafariAutoComplete = (
-      IS_SAFARI && country && fullNumber !== undefined
-      && value.length - fullNumber.length > 1 && !isJustPastedRef.current
-    );
-    parseFullNumber(shouldFixSafariAutoComplete ? `${country.countryCode} ${value}` : value);
-  });
-
-  const handleKeepSessionChange = useLastCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    setAuthRememberMe({ value: e.target.checked });
-  });
-
-  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-
-    if (authIsLoading) {
-      return;
-    }
-
-    const adaptedPhoneNumber = fullNumber?.replace(/[^\d]/g, '');
-    if (adaptedPhoneNumber && phoneNumberSlots[adaptedPhoneNumber]) {
-      window.location.replace(getAccountSlotUrl(phoneNumberSlots[adaptedPhoneNumber]));
-      return;
-    }
-
-    if (canSubmit) {
-      setAuthPhoneNumber({ phoneNumber: fullNumber });
+      setIsCheckingPhone(false);
     }
   }
 
-  const handleGoToAuthQrCode = useLastCallback(() => {
-    goToAuthQrCode();
-  });
+  function handlePinChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const nextPin = event.target.value.replace(/\D/g, '').slice(0, PIN_LENGTH);
 
-  const handleLoginWithPasskey = useLastCallback(() => {
-    loginWithPasskey();
-  });
+    setPin(nextPin);
+    setError('');
+  }
 
-  const isAuthReady = state === 'authorizationStateWaitPhoneNumber';
+  function handleBackToNumbers() {
+    setStep('phone');
+    setPin('');
+    setError('');
+    setPhoneCheckMessage('');
+  }
+
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (isSubmitting || pin.length !== PIN_LENGTH || !selectedPhone) {
+      return;
+    }
+
+    setIsSubmitting(true);
+    setError('');
+
+    try {
+      const result: NeoGramAuthResponse = await authenticate(selectedPhone, pin);
+
+      // Auth.tsx подключит этот сигнал к переходу в основное приложение.
+      window.dispatchEvent(new CustomEvent('neogram:authenticated', {
+        detail: result,
+      }));
+    } catch (authError) {
+      setError(getErrorMessage(authError));
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  function handleBackNavigation() {
+    navigateBack();
+  }
 
   return (
     <div id="auth-phone-number-form" className="custom-scroll">
@@ -254,95 +189,148 @@ const AuthPhoneNumber = ({
           onClick={handleBackNavigation}
         />
       )}
+
       <div className="auth-form">
         <div id="logo" />
-        <h1>{lang('AuthTitle')}</h1>
-        <p className="note">{lang('StartText')}</p>
-        <form className="form" action="" onSubmit={handleSubmit}>
-          <CountryCodeInput
-            id="sign-in-phone-code"
-            value={country}
-            isLoading={!nearestCountry && !country}
-            onChange={handleCountryChange}
-          />
-          <InputText
-            ref={inputRef}
-            id="sign-in-phone-number"
-            label={lang('LoginPhonePlaceholder')}
-            value={fullNumber}
-            error={errorKey && lang.withRegular(errorKey)}
-            inputMode="tel"
-            onChange={handlePhoneNumberChange}
-            onPaste={IS_SAFARI ? handlePaste : undefined}
-          />
-          <Checkbox
-            id="sign-in-keep-session"
-            label={lang('AuthKeepSignedIn')}
-            checked={Boolean(rememberMe)}
-            onChange={handleKeepSessionChange}
-          />
-          {canSubmit && (
-            isAuthReady ? (
+
+        <h1>NeoGram</h1>
+
+        {step === 'phone' ? (
+          <>
+            <p className="note">
+              Выберите свой номер NeoGram или получите новый номер +888.
+            </p>
+
+            <div className="form">
+              {isLoadingNumbers && <Loading />}
+
+              {!isLoadingNumbers && numbers.length > 0 && (
+                <div className="neogram-phone-list">
+                  {numbers.map((item) => {
+                    const phone = normalizePhone(item.phone || item.raw);
+                    const isSelected = selectedPhone === phone;
+
+                    return (
+                      <Button
+                        key={phone}
+                        block
+                        ripple
+                        color={isSelected ? 'primary' : 'translucent'}
+                        className="neogram-phone-option"
+                        onClick={() => handleSelectPhone(phone)}
+                        isLoading={isCheckingPhone && isSelected}
+                      >
+                        <span className="neogram-phone-option-content">
+                          <span className="neogram-phone-number">
+                            {item.phone || item.raw}
+                          </span>
+                          <span className="neogram-phone-details">
+                            {item.price_usd > 0
+                              ? `$${item.price_usd}`
+                              : 'NeoGram'}
+                          </span>
+                        </span>
+                      </Button>
+                    );
+                  })}
+                </div>
+              )}
+
+              {!isLoadingNumbers && numbers.length === 0 && !error && (
+                <p className="note">
+                  Сейчас нет доступных номеров.
+                </p>
+              )}
+
+              {error && (
+                <p className="note error">
+                  {error}
+                </p>
+              )}
+
               <Button
                 className="auth-button"
-                type="submit"
+                isText
                 ripple
-                isLoading={authIsLoading}
+                isLoading={isLoadingNumbers}
+                onClick={() => {
+                  setError('');
+                  setIsLoadingNumbers(true);
+
+                  void generatePhoneNumbers()
+                    .then(setNumbers)
+                    .catch((loadError) => setError(getErrorMessage(loadError)))
+                    .finally(() => setIsLoadingNumbers(false));
+                }}
               >
-                {lang('LoginNext')}
+                Обновить список номеров
               </Button>
-            ) : (
-              <Loading />
-            )
-          )}
-          {isAuthReady && (
-            <Button
-              className="auth-button"
-              isText
-              ripple
-              isLoading={isLoadingQrCode}
-              onClick={handleGoToAuthQrCode}
-            >
-              {lang('LoginQRLogin')}
-            </Button>
-          )}
-          {passkeyOption && (
-            <Button className="auth-button" isText onClick={handleLoginWithPasskey}>
-              {lang('LoginPasskey')}
-            </Button>
-          )}
-          {suggestedLanguage && suggestedLanguage !== language && continueText && (
-            <Button
-              className="auth-button"
-              isText
-              isLoading={isLoading}
-              onClick={handleLangChange}
-            >
-              {continueText}
-            </Button>
-          )}
-        </form>
+            </div>
+          </>
+        ) : (
+          <>
+            <h1>
+              {selectedPhone}
+              <span
+                className="auth-number-edit div-button"
+                onClick={handleBackToNumbers}
+                role="button"
+                tabIndex={0}
+                title="Изменить номер"
+                aria-label="Изменить номер"
+              >
+                ✎
+              </span>
+            </h1>
+
+            <p className="note">
+              {phoneCheckMessage || 'Введите четырёхзначный PIN-код.'}
+            </p>
+
+            <form className="form" action="" onSubmit={handleSubmit}>
+              <InputText
+                id="neogram-sign-in-pin"
+                label="PIN-код"
+                value={pin}
+                onChange={handlePinChange}
+                inputMode="numeric"
+                autoComplete="off"
+                type="password"
+              />
+
+              {error && (
+                <p className="note error">
+                  {error}
+                </p>
+              )}
+
+              {isSubmitting ? (
+                <Loading />
+              ) : (
+                <Button
+                  className="auth-button"
+                  type="submit"
+                  ripple
+                  disabled={pin.length !== PIN_LENGTH}
+                >
+                  Продолжить
+                </Button>
+              )}
+
+              <Button
+                className="auth-button"
+                isText
+                ripple
+                onClick={handleBackToNumbers}
+              >
+                Назад к выбору номера
+              </Button>
+            </form>
+          </>
+        )}
       </div>
     </div>
   );
 };
 
-export default memo(withGlobal(
-  (global): Complete<StateProps> => {
-    const {
-      sharedState: { settings: { language } },
-      countryList: { phoneCodes: phoneCodeList },
-      config,
-      auth,
-      connectionState,
-    } = global;
-
-    return {
-      auth,
-      connectionState,
-      language,
-      phoneCodeList,
-      isTestServer: config?.isTestServer,
-    };
-  },
-)(AuthPhoneNumber));
+export default memo(AuthPhoneNumber);
