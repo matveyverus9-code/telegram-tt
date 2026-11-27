@@ -40,6 +40,16 @@ export interface NeoGramPhoneNumber {
   multiplier: number;
   price_usd: number;
   price_gram: number;
+  reservation_expires_at?: number;
+}
+
+export interface NeoGramPhoneCheckResponse {
+  ok: boolean;
+  exists: boolean;
+  registration: boolean;
+  reserved: boolean;
+  can_register: boolean;
+  account_status: string;
 }
 
 export interface NeoGramApiResponse<T = unknown> {
@@ -52,16 +62,10 @@ export interface NeoGramApiResponse<T = unknown> {
 
 export class NeoGramApiError extends Error {
   status: number;
-
   code: string;
-
   details?: unknown;
 
-  constructor(
-    message: string,
-    status: number,
-    details?: unknown,
-  ) {
+  constructor(message: string, status: number, details?: unknown) {
     super(message);
     this.name = 'NeoGramApiError';
     this.status = status;
@@ -111,7 +115,7 @@ function writeSessions(sessions: StoredSessions): void {
   getStorage()?.setItem(SESSIONS_KEY, JSON.stringify(sessions));
 }
 
-function normalizePhone(phone: string): string {
+export function normalizePhone(phone: string): string {
   return phone.replace(/[^\d+]/g, '');
 }
 
@@ -268,9 +272,71 @@ async function request<T = unknown>(
 }
 
 /**
- * Первичная регистрация или авторизация.
- * Worker самостоятельно создаёт пользователя,
- * если номер ещё не зарегистрирован.
+ * Проверка доступности NeoGram Worker.
+ */
+export async function checkApiStatus(): Promise<boolean> {
+  try {
+    const result = await request<{
+      ok?: boolean;
+      service?: string;
+    }>('/');
+
+    return result.ok === true && result.service === 'NeoGram API';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Получение пяти номеров для экрана выбора.
+ * Этот маршрут публичный: токен авторизации не требуется.
+ */
+export async function generatePhoneNumbers(): Promise<NeoGramPhoneNumber[]> {
+  const result = await request<{
+    ok: boolean;
+    numbers: NeoGramPhoneNumber[];
+    reservation_ttl_seconds?: number;
+  }>('/generate-phone');
+
+  if (!result.ok || !Array.isArray(result.numbers)) {
+    throw new NeoGramApiError('PHONE_LIST_UNAVAILABLE', 500, result);
+  }
+
+  return result.numbers;
+}
+
+/**
+ * Проверка номера перед переходом к вводу PIN.
+ */
+export async function checkPhoneNumber(
+  phone: string,
+): Promise<NeoGramPhoneCheckResponse> {
+  const normalizedPhone = normalizePhone(phone);
+
+  if (!/^\+888\d{4,8}$/.test(normalizedPhone)) {
+    throw new NeoGramApiError('INVALID_PHONE', 400);
+  }
+
+  const result = await request<NeoGramPhoneCheckResponse>(
+    '/auth/check',
+    {
+      method: 'POST',
+      body: {
+        phone: normalizedPhone,
+      },
+    },
+  );
+
+  if (!result.ok) {
+    throw new NeoGramApiError('PHONE_CHECK_FAILED', 500, result);
+  }
+
+  return result;
+}
+
+/**
+ * Вход существующего аккаунта или регистрация нового.
+ * PIN состоит из четырёх цифр.
  */
 export async function authenticate(
   phone: string,
@@ -307,27 +373,11 @@ export async function authenticate(
   const sessions = readSessions();
 
   sessions[normalizedPhone] = result.token;
-
   writeSessions(sessions);
 
   getStorage()?.setItem(ACTIVE_ACCOUNT_KEY, normalizedPhone);
 
   return result;
-}
-
-/**
- * Генерация пяти доступных номеров.
- * ВАЖНО: Worker требует действующую сессию.
- */
-export async function generatePhoneNumbers(): Promise<NeoGramPhoneNumber[]> {
-  const result = await request<{
-    ok: boolean;
-    numbers: NeoGramPhoneNumber[];
-  }>('/generate-phone', {
-    authenticated: true,
-  });
-
-  return result.numbers || [];
 }
 
 /**
@@ -345,7 +395,7 @@ export async function getProfile<T = NeoGramUser>(): Promise<T> {
 }
 
 /**
- * Изменение настроек профиля.
+ * Обновление настроек профиля.
  */
 export async function updateProfile(
   profile: Record<string, unknown>,
@@ -364,39 +414,23 @@ export async function getFragmentInfo<T = unknown>(
   params: Record<string, string> = {},
 ): Promise<T> {
   return request<T>('/fragment/info', {
+    authenticated: true,
     params,
   });
 }
 
 export async function searchPlayer<T = unknown>(
   query: string,
-): Promise<T> {
+): Promise<unknown> {
   const normalizedQuery = query.trim();
 
   if (!normalizedQuery) {
     throw new NeoGramApiError('EMPTY_SEARCH_QUERY', 400);
   }
 
-  return getFragmentInfo<T>({
+  return getFragmentInfo({
     q: normalizedQuery,
   });
-}
-
-/**
- * Получение состояния Worker.
- */
-export async function checkApiStatus(): Promise<boolean> {
-  try {
-    const result = await request<{
-      ok?: boolean;
-      service?: string;
-    }>('/');
-
-    return result.ok === true
-      && result.service === 'NeoGram API';
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -434,7 +468,7 @@ export async function switchAccount(
 }
 
 /**
- * Выход из текущего аккаунта.
+ * Выход из текущего аккаунта на этом устройстве.
  */
 export function logoutAccount(phone?: string): void {
   const account = phone || getActiveAccount();
@@ -447,6 +481,7 @@ export function logoutAccount(phone?: string): void {
 export const NeoGramApi = {
   request,
   authenticate,
+  checkPhoneNumber,
   generatePhoneNumbers,
   getProfile,
   updateProfile,
