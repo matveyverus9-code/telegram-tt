@@ -1,4 +1,3 @@
-
 const API_BASE_URL = 'https://tg-api.matveyverus9.workers.dev';
 
 const DEVICE_ID_KEY = 'neogram.device_id.v1';
@@ -87,7 +86,10 @@ type StoredSessions = Record<string, string>;
 
 function getStorage(): Storage | undefined {
   try {
-    if (typeof window === 'undefined') return undefined;
+    if (typeof window === 'undefined') {
+      return undefined;
+    }
+
     return window.localStorage;
   } catch {
     return undefined;
@@ -97,7 +99,10 @@ function getStorage(): Storage | undefined {
 function readSessions(): StoredSessions {
   try {
     const value = getStorage()?.getItem(SESSIONS_KEY);
-    if (!value) return {};
+
+    if (!value) {
+      return {};
+    }
 
     const parsed: unknown = JSON.parse(value);
 
@@ -105,14 +110,34 @@ function readSessions(): StoredSessions {
       return {};
     }
 
-    return parsed as StoredSessions;
+    return Object.entries(parsed).reduce<StoredSessions>((result, [phone, token]) => {
+      if (typeof token === 'string' && token.length > 0) {
+        result[normalizePhone(phone)] = token;
+      }
+
+      return result;
+    }, {});
   } catch {
     return {};
   }
 }
 
 function writeSessions(sessions: StoredSessions): void {
-  getStorage()?.setItem(SESSIONS_KEY, JSON.stringify(sessions));
+  try {
+    getStorage()?.setItem(SESSIONS_KEY, JSON.stringify(sessions));
+  } catch {
+    throw new NeoGramApiError('SESSION_STORAGE_FAILED', 0);
+  }
+}
+
+function validatePhone(phone: string): string {
+  const normalizedPhone = normalizePhone(phone);
+
+  if (!/^\+[1-9]\d{6,14}$/.test(normalizedPhone)) {
+    throw new NeoGramApiError('INVALID_PHONE', 400);
+  }
+
+  return normalizedPhone;
 }
 
 export function normalizePhone(phone: string): string {
@@ -150,20 +175,28 @@ export function getSessionToken(phone?: string): string | undefined {
     ? normalizePhone(phone)
     : getActiveAccount();
 
-  if (!account) return undefined;
+  if (!account) {
+    return undefined;
+  }
 
   return readSessions()[account];
 }
 
 export function setActiveAccount(phone: string): void {
-  const normalized = normalizePhone(phone);
+  const normalized = validatePhone(phone);
   const sessions = readSessions();
 
   if (!sessions[normalized]) {
     throw new NeoGramApiError('SESSION_NOT_FOUND', 401);
   }
 
-  getStorage()?.setItem(ACTIVE_ACCOUNT_KEY, normalized);
+  const storage = getStorage();
+
+  if (!storage) {
+    throw new NeoGramApiError('SESSION_STORAGE_FAILED', 0);
+  }
+
+  storage.setItem(ACTIVE_ACCOUNT_KEY, normalized);
 }
 
 export function removeSession(phone: string): void {
@@ -288,8 +321,7 @@ export async function checkApiStatus(): Promise<boolean> {
 }
 
 /**
- * Получение пяти номеров для экрана выбора.
- * Этот маршрут публичный: токен авторизации не требуется.
+ * Получение доступных коллекционных номеров.
  */
 export async function generatePhoneNumbers(): Promise<NeoGramPhoneNumber[]> {
   const result = await request<{
@@ -306,16 +338,12 @@ export async function generatePhoneNumbers(): Promise<NeoGramPhoneNumber[]> {
 }
 
 /**
- * Проверка номера перед переходом к вводу PIN.
+ * Проверка международного номера перед вводом PIN.
  */
 export async function checkPhoneNumber(
   phone: string,
 ): Promise<NeoGramPhoneCheckResponse> {
-  const normalizedPhone = normalizePhone(phone);
-
-  if (!/^\+888\d{4,8}$/.test(normalizedPhone)) {
-    throw new NeoGramApiError('INVALID_PHONE', 400);
-  }
+  const normalizedPhone = validatePhone(phone);
 
   const result = await request<NeoGramPhoneCheckResponse>(
     '/auth/check',
@@ -335,18 +363,13 @@ export async function checkPhoneNumber(
 }
 
 /**
- * Вход существующего аккаунта или регистрация нового.
- * PIN состоит из четырёх цифр.
+ * Вход или регистрация аккаунта с четырёхзначным PIN.
  */
 export async function authenticate(
   phone: string,
   pin: string,
 ): Promise<NeoGramAuthResponse> {
-  const normalizedPhone = normalizePhone(phone);
-
-  if (!/^\+888\d{4,8}$/.test(normalizedPhone)) {
-    throw new NeoGramApiError('INVALID_PHONE', 400);
-  }
+  const normalizedPhone = validatePhone(phone);
 
   if (!/^\d{4}$/.test(pin)) {
     throw new NeoGramApiError('INVALID_PIN', 400);
@@ -367,15 +390,21 @@ export async function authenticate(
   );
 
   if (!result.ok || !result.token || !result.user) {
-    throw new NeoGramApiError('INVALID_AUTH_RESPONSE', 500);
+    throw new NeoGramApiError('INVALID_AUTH_RESPONSE', 500, result);
   }
 
   const sessions = readSessions();
-
   sessions[normalizedPhone] = result.token;
+
   writeSessions(sessions);
 
-  getStorage()?.setItem(ACTIVE_ACCOUNT_KEY, normalizedPhone);
+  const storage = getStorage();
+
+  if (!storage) {
+    throw new NeoGramApiError('SESSION_STORAGE_FAILED', 0);
+  }
+
+  storage.setItem(ACTIVE_ACCOUNT_KEY, normalizedPhone);
 
   return result;
 }
@@ -419,7 +448,7 @@ export async function getFragmentInfo<T = unknown>(
   });
 }
 
-export async function searchPlayer<T = unknown>(
+export async function searchPlayer(
   query: string,
 ): Promise<unknown> {
   const normalizedQuery = query.trim();
@@ -434,7 +463,7 @@ export async function searchPlayer<T = unknown>(
 }
 
 /**
- * Универсальные методы для последующих модулей.
+ * Универсальные методы API для последующих модулей.
  */
 export async function apiGet<T = unknown>(
   endpoint: string,
@@ -468,7 +497,7 @@ export async function switchAccount(
 }
 
 /**
- * Выход из текущего аккаунта на этом устройстве.
+ * Выход из аккаунта на этом устройстве.
  */
 export function logoutAccount(phone?: string): void {
   const account = phone || getActiveAccount();
