@@ -49,6 +49,8 @@ function getErrorMessage(error: unknown): string {
       return 'Резерв номера истёк. Получите новый номер.';
     case 'RATE_LIMITED':
       return 'Слишком много попыток. Немного подождите.';
+    case 'SESSION_STORAGE_FAILED':
+      return 'Не удалось сохранить сессию на устройстве.';
     default:
       return code
         ? `Не удалось выполнить вход: ${code}`
@@ -75,32 +77,35 @@ const AuthPhoneNumber = () => {
 
   const normalizedPhone = normalizePhone(phone);
 
-  const canContinue = /^\+\d{7,15}$/.test(normalizedPhone)
+  const canContinue = /^\+[1-9]\d{6,14}$/.test(normalizedPhone)
     && !isCheckingPhone
     && !isSubmitting;
+
+  async function loadCollectionNumbers() {
+    setIsLoadingNumbers(true);
+    setError('');
+
+    try {
+      const result = await generatePhoneNumbers();
+
+      const collectionNumbers = result
+        .filter((item) => normalizePhone(item.phone || item.raw).startsWith('+888'))
+        .slice(0, 5);
+
+      setNumbers(collectionNumbers);
+    } catch (loadError) {
+      setError(getErrorMessage(loadError));
+    } finally {
+      setIsLoadingNumbers(false);
+    }
+  }
 
   async function openCollectionDrawer() {
     setIsDrawerOpen(true);
     setError('');
 
-    if (numbers.length > 0) {
-      return;
-    }
-
-    setIsLoadingNumbers(true);
-
-    try {
-      const result = await generatePhoneNumbers();
-
-      const baseNumbers = result
-        .filter((item) => normalizePhone(item.phone || item.raw).startsWith('+888'))
-        .slice(0, 5);
-
-      setNumbers(baseNumbers);
-    } catch (loadError) {
-      setError(getErrorMessage(loadError));
-    } finally {
-      setIsLoadingNumbers(false);
+    if (numbers.length === 0 && !isLoadingNumbers) {
+      await loadCollectionNumbers();
     }
   }
 
@@ -120,16 +125,12 @@ const AuthPhoneNumber = () => {
     setPhoneCheckMessage('');
 
     try {
-      if (normalizedPhone.startsWith('+888')) {
-        const result = await checkPhoneNumber(normalizedPhone);
+      const result = await checkPhoneNumber(normalizedPhone);
 
-        if (result.exists) {
-          setPhoneCheckMessage('Аккаунт найден. Введите PIN для входа.');
-        } else if (result.can_register || result.reserved) {
-          setPhoneCheckMessage('Номер готов к регистрации. Придумайте PIN для аккаунта.');
-        } else {
-          setPhoneCheckMessage('Введите PIN, чтобы продолжить.');
-        }
+      if (result.exists) {
+        setPhoneCheckMessage('Аккаунт найден. Введите PIN для входа.');
+      } else if (result.can_register || result.reserved) {
+        setPhoneCheckMessage('Номер готов к регистрации. Придумайте PIN для аккаунта.');
       } else {
         setPhoneCheckMessage('Введите четырёхзначный PIN-код для продолжения.');
       }
@@ -206,8 +207,6 @@ const AuthPhoneNumber = () => {
       <div className="auth-form">
         <div id="logo" />
 
-        <h1>NeoGram</h1>
-
         {step === 'phone' ? (
           <>
             <p className="note">
@@ -218,7 +217,7 @@ const AuthPhoneNumber = () => {
               <button
                 type="button"
                 className="neogram-collection-button"
-                onClick={openCollectionDrawer}
+                onClick={() => void openCollectionDrawer()}
                 style={{
                   display: 'flex',
                   alignItems: 'center',
@@ -234,6 +233,8 @@ const AuthPhoneNumber = () => {
                   fontSize: 15,
                   fontWeight: 600,
                   cursor: 'pointer',
+                  transition: 'none',
+                  animation: 'none',
                   WebkitTapHighlightColor: 'transparent',
                 }}
               >
@@ -297,12 +298,10 @@ const AuthPhoneNumber = () => {
               <Button
                 className="auth-button"
                 block
-                ripple
+                ripple={false}
                 disabled={!canContinue}
                 isLoading={isCheckingPhone}
-                onClick={() => {
-                  void handleContinue();
-                }}
+                onClick={() => void handleContinue()}
               >
                 Продолжить
               </Button>
@@ -341,6 +340,8 @@ const AuthPhoneNumber = () => {
                   color: 'var(--color-text)',
                   fontSize: 21,
                   cursor: 'pointer',
+                  transition: 'none',
+                  animation: 'none',
                   WebkitTapHighlightColor: 'transparent',
                 }}
               >
@@ -393,6 +394,7 @@ const AuthPhoneNumber = () => {
                           ? 'var(--color-primary)'
                           : 'transparent',
                         transition: 'none',
+                        animation: 'none',
                       }}
                     />
                   ))}
@@ -437,7 +439,7 @@ const AuthPhoneNumber = () => {
                 className="auth-button"
                 block
                 type="submit"
-                ripple
+                ripple={false}
                 disabled={pin.length !== PIN_LENGTH || isSubmitting}
                 isLoading={isSubmitting}
               >
@@ -448,7 +450,7 @@ const AuthPhoneNumber = () => {
                 className="auth-button"
                 block
                 isText
-                ripple
+                ripple={false}
                 onClick={handleBackToPhone}
               >
                 Изменить номер
@@ -495,6 +497,7 @@ const AuthPhoneNumber = () => {
               color: 'var(--color-text)',
               boxShadow: '0 -8px 40px rgba(0, 0, 0, 0.2)',
               animation: 'none',
+              transition: 'none',
             }}
           >
             <div
@@ -541,6 +544,8 @@ const AuthPhoneNumber = () => {
                   color: 'var(--color-text)',
                   fontSize: 20,
                   cursor: 'pointer',
+                  transition: 'none',
+                  animation: 'none',
                 }}
               >
                 ×
@@ -548,7 +553,7 @@ const AuthPhoneNumber = () => {
             </div>
 
             <p className="note">
-              Базовые номера NeoGram +888. Стоимость зависит от номера.
+              Коллекционные номера NeoGram с кодом +888. Стоимость указана в GRAM.
             </p>
 
             {isLoadingNumbers ? (
@@ -566,10 +571,8 @@ const AuthPhoneNumber = () => {
               >
                 {numbers.map((item) => {
                   const itemPhone = normalizePhone(item.phone || item.raw);
-
-                  const price = item.price_gram > 0
-                    ? item.price_gram
-                    : Math.max(2000, item.price_usd * 100);
+                  const gramPrice = Number(item.price_gram) || 0;
+                  const usdPrice = Number(item.price_usd) || 0;
 
                   return (
                     <button
@@ -590,6 +593,8 @@ const AuthPhoneNumber = () => {
                         color: 'var(--color-text)',
                         textAlign: 'left',
                         cursor: 'pointer',
+                        transition: 'none',
+                        animation: 'none',
                         WebkitTapHighlightColor: 'transparent',
                       }}
                     >
@@ -610,7 +615,11 @@ const AuthPhoneNumber = () => {
                           whiteSpace: 'nowrap',
                         }}
                       >
-                        {price.toLocaleString('ru-RU')} GRAM
+                        {gramPrice > 0
+                          ? `${gramPrice.toLocaleString('ru-RU')} GRAM`
+                          : usdPrice > 0
+                            ? `$${usdPrice.toLocaleString('en-US')}`
+                            : 'Цена не указана'}
                       </span>
                     </button>
                   );
@@ -632,25 +641,7 @@ const AuthPhoneNumber = () => {
 
             <button
               type="button"
-              onClick={async () => {
-                setNumbers([]);
-                setError('');
-                setIsLoadingNumbers(true);
-
-                try {
-                  const result = await generatePhoneNumbers();
-
-                  setNumbers(
-                    result
-                      .filter((item) => normalizePhone(item.phone || item.raw).startsWith('+888'))
-                      .slice(0, 5),
-                  );
-                } catch (loadError) {
-                  setError(getErrorMessage(loadError));
-                } finally {
-                  setIsLoadingNumbers(false);
-                }
-              }}
+              onClick={() => void loadCollectionNumbers()}
               disabled={isLoadingNumbers}
               style={{
                 width: '100%',
@@ -662,7 +653,10 @@ const AuthPhoneNumber = () => {
                 color: 'var(--color-text)',
                 fontSize: 14,
                 fontWeight: 600,
-                cursor: 'pointer',
+                cursor: isLoadingNumbers ? 'default' : 'pointer',
+                opacity: isLoadingNumbers ? 0.6 : 1,
+                transition: 'none',
+                animation: 'none',
               }}
             >
               Обновить номера
