@@ -1,320 +1,619 @@
-import {
-  Api as GramJs,
-  errors,
-  sessions,
-  type Update,
-} from '../../../lib/gramjs';
-import type { TwoFaParams } from '../../../lib/gramjs/client/2fa';
-import TelegramClient from '../../../lib/gramjs/client/TelegramClient';
-import { RPCError } from '../../../lib/gramjs/errors';
-import { Logger as GramJsLogger } from '../../../lib/gramjs/extensions/index';
-
-import type { ThreadId } from '../../../types';
 import type {
-  ApiAccountConnection,
-  ApiAvatarUpload,
   ApiInitialArgs,
+  ApiSessionData,
+  ApiUser,
+  ApiUserFullInfo,
+  ApiChat,
+  ApiMessage,
+  ApiUpdate,
   ApiMediaFormat,
   ApiOnProgress,
-  ApiSessionData,
+  ApiAvatarUpload,
+  ApiAccountConnection,
 } from '../../types';
+import type { ThreadId } from '../../../types';
+import type { TwoFaParams } from '../../../lib/gramjs/client/2fa';
+import TelegramClient from '../../../lib/gramjs/client/TelegramClient';
+import { Api as GramJs } from '../../../lib/gramjs';
 
-import {
-  APP_CODE_NAME,
-  DEBUG, DEBUG_GRAMJS, IS_TEST, LANG_PACK, TELEGRAM_API_HASH, TELEGRAM_API_ID, UPLOAD_WORKERS,
-} from '../../../config';
-import { pause } from '../../../util/schedulers';
-import { buildWebPage } from '../apiBuilders/messageContent';
-import {
-  buildApiMessage,
-  setMessageBuilderCurrentUserId,
-} from '../apiBuilders/messages';
-import { buildApiPeerId } from '../apiBuilders/peers';
-import { buildApiStory } from '../apiBuilders/stories';
-import { buildApiUser, buildApiUserFullInfo } from '../apiBuilders/users';
-import { resetGiftTmpPassword } from '../giftTmpPassword';
-import {
-  buildInputChannelFromLocalDb,
-  buildInputPeerFromLocalDb,
-  buildInputUserFromLocalDb,
-  DEFAULT_PRIMITIVES,
-  getEntityTypeById,
-} from '../gramjsBuilders';
-import {
-  addDocumentToLocalDb,
-  addInlineBotRepairInfo,
-  addSavedMusicRepairInfo,
-  addStoryToLocalDb, addUserToLocalDb,
-  addWebPageMediaToLocalDb,
-} from '../helpers/localDb';
-import {
-  buildApiError,
-  isResponseUpdate, log,
-} from '../helpers/misc';
-import localDb, { clearLocalDb, type InlineBotRepairInfo, type RepairInfo } from '../localDb';
 import { sendApiUpdate } from '../updates/apiUpdateEmitter';
-import { processAndUpdateEntities, processMessageAndUpdateThreadInfo } from '../updates/entityProcessor';
 import {
-  getDifference,
-  init as initUpdatesManager,
-  processUpdate,
-  requestChannelDifference as requestChannelDifferenceFromUpdates,
-  reset as resetUpdatesManager,
-  setOpenedChannelIds as setOpenedChannelIdsInUpdates,
-  updateChannelState,
-} from '../updates/updateManager';
-import {
-  onAuthError,
-  onAuthReady,
-  onCurrentUserUpdate,
-  onPasskeyOption,
-  onRequestCode,
-  onRequestPassword,
-  onRequestPhoneNumber,
-  onRequestQrCode,
-  onRequestRegistration,
-  onWebAuthTokenFailed,
+  getWorkerToken,
+  getCurrentWorkerUser,
+  getCurrentWorkerProfile,
+  clearWorkerSession,
+  restoreWorkerSession,
 } from './auth';
-import downloadMediaWithClient, { parseMediaUrl } from './media';
-import { clearTonConnectKeys } from './tonConnect';
-import { clearPreviousSigningKeys } from './wallet';
 
-import { ChatAbortController } from '../ChatAbortController';
+const WORKER_URL = 'https://tg-api.gramjs.workers.dev';
 
-const DEFAULT_USER_AGENT = 'Unknown UserAgent';
-const DEFAULT_PLATFORM = 'Unknown platform';
-const ACCOUNT_REQUEST_TIMEOUT_MS = 10000;
-const TERMINATED_SESSION_ERRORS = new Set(['AUTH_KEY_UNREGISTERED', 'SESSION_REVOKED', 'USER_DEACTIVATED']);
+type WorkerRecord = Record<string, any>;
 
-GramJsLogger.setLevel(DEBUG_GRAMJS ? 'debug' : 'warn');
+type WorkerSyncResponse = {
+  ok?: boolean;
+  me?: WorkerRecord;
+  user?: WorkerRecord;
+  chats?: WorkerRecord[];
+  messages?: WorkerRecord[];
+  profiles?: WorkerRecord[];
+  cursor?: string | number | null;
+};
 
-const gramJsUpdateEventBuilder = { build: (update: Update) => update };
+type WorkerMessageResponse = {
+  ok: boolean;
+  message?: WorkerRecord;
+  error?: string;
+  code?: string;
+};
 
-const CHAT_ABORT_CONTROLLERS = new Map<string, ChatAbortController>();
+let client: TelegramClient | undefined;
+let currentUserId: string | undefined;
+let currentCursor: string | number | null = null;
+let isInitialized = false;
+let syncPromise: Promise<void> | undefined;
+
+const CHAT_ABORT_CONTROLLERS = new Map<string, AbortController>();
 const ABORT_CONTROLLERS = new Map<string, AbortController>();
 
-let client: TelegramClient;
-let currentUserId: string | undefined;
+const DEFAULT_USER_FULL_INFO: ApiUserFullInfo = {};
 
-export function setLanguageCode({ langCode }: { langCode: string }) {
-  return client.setLanguageCode(langCode);
+function getString(value: unknown, fallback = ''): string {
+  if (value === undefined || value === null) return fallback;
+  return String(value);
 }
 
-export async function init(initialArgs: ApiInitialArgs, onConnected?: NoneToVoidFunction) {
-  if (DEBUG) {
-    // eslint-disable-next-line no-console
-    console.log('>>> START INIT API');
+function getNumber(value: unknown, fallback = 0): number {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function getTimestamp(value: unknown): number {
+  if (typeof value === 'number') {
+    return value > 1000000000000 ? Math.floor(value / 1000) : value;
   }
 
-  const {
-    userAgent, platform, sessionData, isWebmSupported, maxBufferSize, webAuthToken, dcId,
-    shouldForceHttpTransport, shouldAllowHttpTransport,
-    shouldDebugExportedSenders, langCode, isTestServerRequested, accountIds,
-    hasPasskeySupport, webAuthUserId,
-  } = initialArgs;
+  if (typeof value === 'string') {
+    const numeric = Number(value);
 
-  const session = new sessions.CallbackSession(sessionData, onSessionUpdate);
+    if (Number.isFinite(numeric) && value.trim() !== '') {
+      return numeric > 1000000000000 ? Math.floor(numeric / 1000) : numeric;
+    }
 
-  (self as any).isWebmSupported = isWebmSupported;
+    const parsed = Date.parse(value);
 
-  (self as any).maxBufferSize = maxBufferSize;
+    if (Number.isFinite(parsed)) {
+      return Math.floor(parsed / 1000);
+    }
+  }
 
-  client = new TelegramClient(session, TELEGRAM_API_ID, TELEGRAM_API_HASH, {
-    deviceModel: navigator.userAgent || userAgent || DEFAULT_USER_AGENT,
-    systemVersion: platform || DEFAULT_PLATFORM,
-    appVersion: `${APP_VERSION} ${APP_CODE_NAME}`,
-    useWSS: true,
-    additionalDcsDisabled: IS_TEST,
-    shouldDebugExportedSenders,
-    shouldForceHttpTransport,
-    shouldAllowHttpTransport,
-    dcId,
-    langPack: LANG_PACK,
-    langCode,
-    systemLangCode: navigator.language,
-    isTestServerRequested,
+  return Math.floor(Date.now() / 1000);
+}
+
+function normalizeUsername(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+
+  const username = value.trim().replace(/^@/, '');
+
+  return username || undefined;
+}
+
+function normalizePeerId(record: WorkerRecord, fallbackType: 'user' | 'chat' | 'channel' = 'user'): string {
+  const id = getString(record.id ?? record.user_id ?? record.chat_id);
+
+  if (!id) return '';
+
+  if (record.peer_id !== undefined) {
+    return getString(record.peer_id);
+  }
+
+  if (record.chat_type === 'channel' || record.type === 'channel') {
+    return id.startsWith('-100') ? id : `-100${id}`;
+  }
+
+  if (record.chat_type === 'group' || record.type === 'group' || fallbackType === 'chat') {
+    return id.startsWith('-') ? id : `-${id}`;
+  }
+
+  return id;
+}
+
+function buildApiUser(profile: WorkerRecord, self = false): ApiUser {
+  const username = normalizeUsername(profile.username);
+  const firstName = getString(
+    profile.first_name ?? profile.firstName ?? profile.display_name,
+    username || 'NeoGram User',
+  );
+
+  const lastName = getString(profile.last_name ?? profile.lastName);
+
+  return {
+    id: normalizePeerId(profile),
+    isMin: false,
+    isSelf: self || undefined,
+    isVerified: profile.is_verified ? true : undefined,
+    isPremium: Boolean(profile.is_premium),
+    type: 'userTypeRegular',
+    firstName,
+    lastName: lastName || undefined,
+    phoneNumber: getString(profile.phone ?? profile.phone_number),
+    usernames: username
+      ? [{
+        username,
+        isActive: true,
+        isEditable: true,
+      }]
+      : [],
+    hasUsername: Boolean(username),
+    noStatus: !profile.last_seen_at,
+  };
+}
+
+function buildApiChat(chat: WorkerRecord): ApiChat {
+  const rawType = getString(chat.chat_type ?? chat.type, 'private');
+  const id = normalizePeerId(chat, rawType === 'group' ? 'chat' : 'user');
+
+  let type: ApiChat['type'] = 'chatTypePrivate';
+
+  if (rawType === 'group' || rawType === 'basic_group') {
+    type = 'chatTypeBasicGroup';
+  } else if (rawType === 'supergroup') {
+    type = 'chatTypeSuperGroup';
+  } else if (rawType === 'channel') {
+    type = 'chatTypeChannel';
+  } else if (rawType === 'community') {
+    type = 'chatTypeCommunity';
+  }
+
+  const username = normalizeUsername(chat.username);
+
+  return {
+    id,
+    type,
+    title: getString(
+      chat.title ?? chat.name,
+      'NeoGram Chat',
+    ),
+    usernames: username
+      ? [{
+        username,
+        isActive: true,
+        isEditable: false,
+      }]
+      : undefined,
+    hasUsername: Boolean(username) || undefined,
+    membersCount: chat.members_count !== undefined
+      ? getNumber(chat.members_count)
+      : undefined,
+    isVerified: chat.is_verified ? true : undefined,
+    isProtected: chat.is_protected ? true : undefined,
+    isForum: chat.is_forum ? true : undefined,
+  };
+}
+
+function buildApiMessage(message: WorkerRecord, meId = currentUserId || ''): ApiMessage {
+  const chatId = getString(
+    message.chat_id ?? message.chatId ?? message.peer_id,
+  );
+
+  const senderId = getString(
+    message.sender_id ?? message.senderId ?? message.user_id,
+  );
+
+  const text = getString(message.text ?? message.message ?? message.content);
+
+  const createdAt = getTimestamp(
+    message.created_at ?? message.date ?? message.timestamp,
+  );
+
+  return {
+    id: getNumber(message.id ?? message.message_id),
+    chatId,
+    senderId: senderId || undefined,
+    date: createdAt,
+    isOutgoing: Boolean(
+      message.is_outgoing ??
+      message.out ??
+      (senderId && senderId === meId),
+    ),
+    content: {
+      text: {
+        text,
+      },
+    },
+    isEdited: Boolean(message.is_edited ?? message.edited),
+    isPinned: Boolean(message.is_pinned ?? message.pinned),
+    isProtected: Boolean(message.is_protected),
+    isForwardingAllowed: !message.is_protected,
+    viewsCount: message.views_count !== undefined
+      ? getNumber(message.views_count)
+      : undefined,
+  };
+}
+
+function emitError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+
+  sendApiUpdate({
+    '@type': 'error',
+    error: {
+      message,
+      code: 500,
+      hasErrorKey: false,
+    },
+  });
+}
+
+async function workerRequest<T>(
+  path: string,
+  options: {
+    method?: 'GET' | 'POST';
+    body?: Record<string, unknown>;
+    signal?: AbortSignal;
+  } = {},
+): Promise<T> {
+  const token = getWorkerToken();
+
+  if (!token) {
+    throw new Error('NEOGRAM_AUTH_REQUIRED');
+  }
+
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+    Authorization: `Bearer ${token}`,
+  };
+
+  if (options.body) {
+    headers['Content-Type'] = 'application/json';
+  }
+
+  let response: Response;
+
+  try {
+    response = await fetch(`${WORKER_URL}${path}`, {
+      method: options.method ?? 'GET',
+      headers,
+      body: options.body ? JSON.stringify(options.body) : undefined,
+      signal: options.signal,
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw error;
+    }
+
+    throw new Error('NEOGRAM_NETWORK_ERROR');
+  }
+
+  let data: T;
+
+  try {
+    data = await response.json() as T;
+  } catch {
+    throw new Error('NEOGRAM_INVALID_RESPONSE');
+  }
+
+  if (!response.ok) {
+    const errorData = data as {
+      error?: string;
+      code?: string;
+    };
+
+    throw new Error(
+      errorData.code ||
+      errorData.error ||
+      `NEOGRAM_HTTP_${response.status}`,
+    );
+  }
+
+  return data;
+}
+
+function emitCurrentUser(user: ApiUser) {
+  sendApiUpdate({
+    '@type': 'updateCurrentUser',
+    currentUser: user,
+    currentUserFullInfo: DEFAULT_USER_FULL_INFO,
+  });
+}
+
+function emitEntities(
+  profiles: WorkerRecord[],
+  chats: WorkerRecord[],
+  currentUser: ApiUser,
+) {
+  const users: Record<string, ApiUser> = {};
+  const apiChats: Record<string, ApiChat> = {};
+
+  users[currentUser.id] = currentUser;
+
+  profiles.forEach((profile) => {
+    const user = buildApiUser(profile, getString(profile.id) === currentUser.id);
+    if (user.id) {
+      users[user.id] = user;
+    }
   });
 
-  client.addEventHandler(handleGramJsUpdate, gramJsUpdateEventBuilder);
+  chats.forEach((chat) => {
+    const apiChat = buildApiChat(chat);
 
-  try {
-    if (DEBUG) {
-      log('CONNECTING');
-
-      (self as any).invoke = invokeRequest;
-
-      (self as any).GramJs = GramJs;
+    if (apiChat.id) {
+      apiChats[apiChat.id] = apiChat;
     }
+  });
 
-    try {
-      client.setPingCallback(getDifference);
-      await client.start({
-        phoneNumber: onRequestPhoneNumber,
-        phoneCode: onRequestCode,
-        password: onRequestPassword,
-        firstAndLastNames: onRequestRegistration,
-        onPasskeyOption,
-        qrCode: onRequestQrCode,
-        onError: onAuthError,
-        initialMethod: platform === 'iOS' || platform === 'Android' ? 'phoneNumber' : 'qrCode',
-        shouldThrowIfUnauthorized: Object.values(sessionData?.keys || {}).length > 0,
-        webAuthToken,
-        webAuthUserId,
-        webAuthTokenFailed: onWebAuthTokenFailed,
-        accountIds,
-        hasPasskeySupport,
-      }, onConnected);
-    } catch (err: any) {
-      // eslint-disable-next-line no-console
-      console.error(err);
-
-      if (err.message !== 'Disconnect' && err.message !== 'Cannot send requests while disconnected') {
-        sendApiUpdate({
-          '@type': 'updateConnectionState',
-          connectionState: 'connectionStateBroken',
-        });
-
-        return;
-      }
-    }
-
-    if (DEBUG) {
-      // eslint-disable-next-line no-console
-      console.log('>>> FINISH INIT API');
-      log('CONNECTED');
-    }
-
-    onAuthReady();
-    onSessionUpdate(session.getSessionData());
-    sendApiUpdate({ '@type': 'updateApiReady' });
-
-    initUpdatesManager(invokeRequest);
-
-    void fetchCurrentUser();
-  } catch (err) {
-    if (DEBUG) {
-      log('CONNECTING ERROR', err);
-    }
-
-    throw err;
-  }
+  sendApiUpdate({
+    '@type': 'updateEntities',
+    users,
+    chats: apiChats,
+  });
 }
 
-export function setIsPremium({ isPremium }: { isPremium: boolean }) {
-  client.setIsPremium(isPremium);
+function emitMessages(messages: WorkerRecord[], meId: string) {
+  const orderedMessages = [...messages].sort((a, b) => {
+    return getTimestamp(a.created_at ?? a.date) -
+      getTimestamp(b.created_at ?? b.date);
+  });
+
+  orderedMessages.forEach((record) => {
+    const message = buildApiMessage(record, meId);
+
+    if (!message.chatId || !Number.isFinite(message.id)) return;
+
+    sendApiUpdate({
+      '@type': 'newMessage',
+      chatId: message.chatId,
+      id: message.id,
+      message,
+    });
+  });
 }
 
-const LOG_OUT_TIMEOUT = 2500;
-export async function destroy(noLogOut = false, noClearLocalDb = false) {
-  if (!noLogOut && client.isConnected()) {
-    await Promise.race([
-      invokeRequest(new GramJs.auth.LogOut()),
-      pause(LOG_OUT_TIMEOUT),
-    ]);
-  }
+function emitChatsLastMessages(messages: WorkerRecord[], meId: string) {
+  const latestByChat = new Map<string, WorkerRecord>();
 
-  if (!noClearLocalDb) {
-    clearLocalDb();
-    resetUpdatesManager();
-    clearTonConnectKeys();
-    clearPreviousSigningKeys();
-  }
+  messages.forEach((message) => {
+    const chatId = getString(
+      message.chat_id ?? message.chatId ?? message.peer_id,
+    );
 
-  resetGiftTmpPassword();
-  client.destroy();
+    if (!chatId) return;
+
+    const existing = latestByChat.get(chatId);
+
+    if (
+      !existing ||
+      getTimestamp(message.created_at ?? message.date) >=
+      getTimestamp(existing.created_at ?? existing.date)
+    ) {
+      latestByChat.set(chatId, message);
+    }
+  });
+
+  latestByChat.forEach((record, chatId) => {
+    sendApiUpdate({
+      '@type': 'updateChatLastMessage',
+      id: chatId,
+      lastMessage: buildApiMessage(record, meId),
+    });
+  });
 }
 
-// Requests run without merging another account's entities or updates into the current account
-export async function invokeWithAccount<T extends GramJs.AnyRequest>(
-  request: T,
-  connection?: ApiAccountConnection,
-): Promise<T['__response'] | false | undefined> {
-  const accountClient = connection ? new TelegramClient(
-    new sessions.CallbackSession(connection.sessionData, () => undefined), TELEGRAM_API_ID, TELEGRAM_API_HASH,
+async function performSync() {
+  const response = await workerRequest<WorkerSyncResponse>('/sync');
+
+  const me = response.me ?? response.user ?? getCurrentWorkerProfile();
+
+  if (!me) {
+    throw new Error('NEOGRAM_PROFILE_NOT_FOUND');
+  }
+
+  const currentUser = buildApiUser(me, true);
+
+  currentUserId = currentUser.id;
+  currentCursor = response.cursor ?? currentCursor;
+
+  const chats = Array.isArray(response.chats) ? response.chats : [];
+  const profiles = Array.isArray(response.profiles) ? response.profiles : [];
+  const messages = Array.isArray(response.messages) ? response.messages : [];
+
+  emitCurrentUser(currentUser);
+  emitEntities(profiles, chats, currentUser);
+  emitMessages(messages, currentUser.id);
+  emitChatsLastMessages(messages, currentUser.id);
+
+  sendApiUpdate({
+    '@type': 'updateConnectionState',
+    connectionState: 'connectionStateReady',
+  });
+
+  return;
+}
+
+export async function syncWorkerData() {
+  if (syncPromise) return syncPromise;
+
+  syncPromise = performSync()
+    .catch((error) => {
+      emitError(error);
+      throw error;
+    })
+    .finally(() => {
+      syncPromise = undefined;
+    });
+
+  return syncPromise;
+}
+
+export async function fetchWorkerChats(): Promise<ApiChat[]> {
+  const response = await workerRequest<{
+    chats?: WorkerRecord[];
+  }>('/chats');
+
+  return (response.chats || []).map(buildApiChat);
+}
+
+export async function fetchWorkerMessages(chatId?: string): Promise<ApiMessage[]> {
+  const path = chatId
+    ? `/messages?chat_id=${encodeURIComponent(chatId)}`
+    : '/messages';
+
+  const response = await workerRequest<{
+    messages?: WorkerRecord[];
+  }>(path);
+
+  return (response.messages || []).map((message) => {
+    return buildApiMessage(message);
+  });
+}
+
+export async function sendWorkerMessage(
+  chatId: string,
+  text: string,
+): Promise<ApiMessage> {
+  const normalizedText = text.trim();
+
+  if (!chatId) {
+    throw new Error('NEOGRAM_CHAT_REQUIRED');
+  }
+
+  if (!normalizedText) {
+    throw new Error('NEOGRAM_MESSAGE_EMPTY');
+  }
+
+  const response = await workerRequest<WorkerMessageResponse>(
+    '/messages/send',
     {
-      deviceModel: navigator.userAgent || DEFAULT_USER_AGENT,
-      systemVersion: connection.platform || DEFAULT_PLATFORM,
-      appVersion: `${APP_VERSION} ${APP_CODE_NAME}`,
-      useWSS: true,
-      langPack: LANG_PACK,
-      langCode: connection.langCode,
-      systemLangCode: navigator.language,
-      shouldAllowHttpTransport: connection.shouldAllowHttpTransport,
-      shouldForceHttpTransport: connection.shouldForceHttpTransport,
-      isTestServerRequested: connection.sessionData.isTest,
-      additionalDcsDisabled: true,
-      autoReconnect: false,
-      connectionRetries: 1,
-      requestRetries: 1,
+      method: 'POST',
+      body: {
+        chat_id: chatId,
+        text: normalizedText,
+      },
     },
-  ) : client;
-  const controller = new AbortController();
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      (async () => {
-        try {
-          if (connection) await accountClient.connect();
-          if (controller.signal.aborted) return undefined;
-          return await accountClient.invoke(request, undefined, controller.signal);
-        } finally {
-          // A connection can finish after the timeout has already destroyed its client
-          if (connection) accountClient.destroy();
-        }
-      })(),
-      new Promise<undefined>((resolve) => {
-        timeout = setTimeout(() => {
-          controller.abort();
-          resolve(undefined);
-        }, ACCOUNT_REQUEST_TIMEOUT_MS);
-      }),
-    ]);
-  } catch (err) {
-    // Requests can contain credentials that must not enter diagnostic logs, so only a terminated session is reported
-    return err instanceof RPCError && TERMINATED_SESSION_ERRORS.has(err.errorMessage) ? false : undefined;
-  } finally {
-    clearTimeout(timeout);
-    if (connection) accountClient.destroy();
+  );
+
+  if (!response.ok || !response.message) {
+    throw new Error(response.code || response.error || 'MESSAGE_SEND_FAILED');
   }
+
+  const message = buildApiMessage(
+    response.message,
+    currentUserId || '',
+  );
+
+  sendApiUpdate({
+    '@type': 'newMessage',
+    chatId: message.chatId,
+    id: message.id,
+    message,
+  });
+
+  sendApiUpdate({
+    '@type': 'updateChatLastMessage',
+    id: message.chatId,
+    lastMessage: message,
+  });
+
+  return message;
+}
+
+export async function init(
+  _initialArgs: ApiInitialArgs,
+  onConnected?: NoneToVoidFunction,
+) {
+  if (isInitialized) {
+    await syncWorkerData();
+    onConnected?.();
+    return;
+  }
+
+  sendApiUpdate({
+    '@type': 'updateConnectionState',
+    connectionState: 'connectionStateConnecting',
+  });
+
+  try {
+    if (!getWorkerToken()) {
+      throw new Error('NEOGRAM_AUTH_REQUIRED');
+    }
+
+    await syncWorkerData();
+
+    isInitialized = true;
+
+    sendApiUpdate({
+      '@type': 'updateApiReady',
+    });
+
+    onConnected?.();
+  } catch (error) {
+    sendApiUpdate({
+      '@type': 'updateConnectionState',
+      connectionState: 'connectionStateBroken',
+    });
+
+    emitError(error);
+    throw error;
+  }
+}
+
+export async function fetchCurrentUser() {
+  const profile = getCurrentWorkerProfile();
+
+  if (profile) {
+    const user = buildApiUser(profile, true);
+    currentUserId = user.id;
+    emitCurrentUser(user);
+  }
+
+  await syncWorkerData();
+}
+
+export function getClient(): TelegramClient {
+  return client as TelegramClient;
+}
+
+export function setLanguageCode(_params: { langCode: string }) {
+  // NeoGram does not initialize an MTProto client.
+}
+
+export function setIsPremium(_params: { isPremium: boolean }) {
+  // Premium state is supplied by the NeoGram profile.
+}
+
+export async function destroy(
+  _noLogOut = false,
+  _noClearLocalDb = false,
+) {
+  client?.destroy();
+  client = undefined;
+
+  CHAT_ABORT_CONTROLLERS.forEach((controller) => controller.abort());
+  CHAT_ABORT_CONTROLLERS.clear();
+
+  ABORT_CONTROLLERS.forEach((controller) => controller.abort());
+  ABORT_CONTROLLERS.clear();
+
+  currentUserId = undefined;
+  currentCursor = null;
+  isInitialized = false;
+  clearWorkerSession();
 }
 
 export function disconnect() {
-  client.disconnect();
+  client?.disconnect();
 }
 
-export function getClient() {
-  return client;
+export function handleGramJsUpdate(_update: unknown) {
+  // Telegram MTProto updates are intentionally disabled.
 }
 
-function onSessionUpdate(sessionData?: ApiSessionData) {
-  sendApiUpdate({
-    '@type': 'updateSession',
-    sessionData,
-  });
+export async function invokeWithAccount<T extends GramJs.AnyRequest>(
+  _request: T,
+  _connection?: ApiAccountConnection,
+): Promise<T['__response'] | false | undefined> {
+  return undefined;
 }
 
-type UpdateConfig = GramJs.UpdateConfig & { _entities?: (GramJs.TypeUser | GramJs.TypeChat)[] };
-
-export function handleGramJsUpdate(update: any) {
-  processUpdate(update);
-
-  if (update instanceof GramJs.UpdatesTooLong) {
-    void handleTerminatedSession();
-  } else {
-    const updates = 'updates' in update ? update.updates : [update];
-    updates.forEach((nestedUpdate: any) => {
-      if (!(nestedUpdate instanceof GramJs.UpdateConfig)) return;
-
-      const currentUser = (nestedUpdate as UpdateConfig)._entities
-        ?.find((entity) => entity instanceof GramJs.User && buildApiPeerId(entity.id, 'user') === currentUserId);
-      if (!(currentUser instanceof GramJs.User)) return;
-
-      setIsPremium({ isPremium: Boolean(currentUser.premium) });
-    });
-  }
-}
-
-type InvokeRequestParams = {
+export type InvokeRequestParams = {
   shouldThrow?: boolean;
   shouldIgnoreUpdates?: boolean;
   dcId?: number;
@@ -323,181 +622,69 @@ type InvokeRequestParams = {
   abortControllerThreadId?: ThreadId;
   abortControllerGroup?: 'call';
   shouldRetryOnTimeout?: boolean;
+  shouldReturnTrue?: boolean;
 };
 
 export async function invokeRequest<T extends GramJs.AnyRequest>(
-  request: T,
-  params?: InvokeRequestParams & { shouldReturnTrue?: false },
-): Promise<T['__response'] | undefined>;
-
-export async function invokeRequest<T extends GramJs.AnyRequest>(
-  request: T,
-  params?: InvokeRequestParams & { shouldReturnTrue: true },
-): Promise<true | undefined>;
-
-export async function invokeRequest<T extends GramJs.AnyRequest>(
-  request: T,
-  params: InvokeRequestParams & { shouldReturnTrue?: boolean } = {},
-) {
-  const {
-    shouldThrow, shouldIgnoreUpdates, dcId, shouldIgnoreErrors, abortControllerChatId, abortControllerThreadId,
-    shouldRetryOnTimeout, abortControllerGroup,
-  } = params;
-  const shouldReturnTrue = Boolean(params.shouldReturnTrue);
-
-  let abortSignal: AbortSignal | undefined;
-  if (abortControllerChatId) {
-    let controller = CHAT_ABORT_CONTROLLERS.get(abortControllerChatId);
-    if (!controller) {
-      controller = new ChatAbortController();
-      CHAT_ABORT_CONTROLLERS.set(abortControllerChatId, controller);
-    }
-
-    abortSignal = abortControllerThreadId ? controller.getThreadSignal(abortControllerThreadId) : controller.signal;
-  }
-
-  if (abortControllerGroup) {
-    let controller = ABORT_CONTROLLERS.get(abortControllerGroup);
-    if (!controller) {
-      controller = new AbortController();
-      ABORT_CONTROLLERS.set(abortControllerGroup, controller);
-    }
-    abortSignal = controller.signal;
-  }
-
-  try {
-    if (DEBUG) {
-      log('INVOKE', request.className);
-    }
-
-    const result = await client.invoke(request, dcId, abortSignal, shouldRetryOnTimeout);
-
-    processAndUpdateEntities(result);
-
-    if (DEBUG) {
-      // The streaming URL carries a secret
-      log('RESPONSE', request.className, request instanceof GramJs.toncenter.GetStreamingUrl ? '[hidden]' : result);
-    }
-
-    if (!shouldIgnoreUpdates && isResponseUpdate(result)) {
-      processUpdate(result);
-    }
-
-    return shouldReturnTrue ? result && true : result;
-  } catch (err: any) {
-    if (shouldIgnoreErrors) return undefined;
-    if (DEBUG) {
-      log('INVOKE ERROR', request.className);
-      // eslint-disable-next-line no-console
-      console.debug('invokeRequest failed with payload', request);
-      // eslint-disable-next-line no-console
-      console.error(err);
-    }
-
-    const message = err instanceof RPCError ? err.errorMessage : err.message;
-
-    if (message.includes('FROZEN_METHOD_INVALID')) {
-      dispatchNotSupportedInFrozenAccountUpdate(err, request);
-    }
-
-    if (shouldThrow) {
-      throw err;
-    }
-
-    dispatchErrorUpdate(err, request);
-
-    return undefined;
-  }
+  _request: T,
+  _params?: InvokeRequestParams,
+): Promise<T['__response'] | true | undefined> {
+  return undefined;
 }
 
 export function invokeRequestBeacon<T extends GramJs.AnyRequest>(
-  request: T,
-  dcId?: number,
+  _request: T,
+  _dcId?: number,
 ) {
-  if (DEBUG) {
-    log('BEACON', request.className);
-  }
-
-  client.invokeBeacon(request, dcId);
+  // MTProto beacons are disabled.
 }
 
 export async function downloadMedia(
-  args: {
-    url: string; mediaFormat: ApiMediaFormat; start?: number; end?: number;
+  _args: {
+    url: string;
+    mediaFormat: ApiMediaFormat;
+    start?: number;
+    end?: number;
   },
-  onProgress?: ApiOnProgress,
+  _onProgress?: ApiOnProgress,
 ) {
-  try {
-    const result = await downloadMediaWithClient(args, client, onProgress);
-    return result;
-  } catch (err: unknown) {
-    if (err instanceof RPCError) {
-      if (err.errorMessage.startsWith('FILE_REFERENCE')) {
-        if (DEBUG) {
-          // eslint-disable-next-line no-console
-          console.warn('Trying to repair file reference', args.url);
-        }
-        const isFileReferenceRepaired = await repairFileReference({ url: args.url });
-        if (isFileReferenceRepaired) {
-          return downloadMediaWithClient(args, client, onProgress);
-        }
-
-        if (DEBUG) {
-          // eslint-disable-next-line no-console
-          console.error('Failed to repair file reference', args.url);
-        }
-      }
-
-      if (err.errorMessage === 'FILE_ID_INVALID' && args.url.includes('avatar')) {
-        if (DEBUG) {
-          // eslint-disable-next-line no-console
-          console.warn('Inaccessible avatar image', args.url);
-        }
-        return undefined;
-      }
-    }
-
-    if (DEBUG) {
-      // eslint-disable-next-line no-console
-      console.error('Failed to download media', args.url, err);
-    }
-
-    throw err;
-  }
+  throw new Error('NEOGRAM_MEDIA_DOWNLOAD_NOT_SUPPORTED');
 }
 
-export function uploadFile(file: File, onProgress?: ApiOnProgress) {
-  return client.uploadFile({ file, onProgress, workers: UPLOAD_WORKERS });
+export async function uploadFile(
+  _file: File,
+  _onProgress?: ApiOnProgress,
+) {
+  throw new Error('NEOGRAM_FILE_UPLOAD_NOT_SUPPORTED');
 }
 
-export async function uploadAvatar({ file, video, videoStartTs }: ApiAvatarUpload) {
-  const [inputFile, inputVideo] = await Promise.all([uploadFile(file), video ? uploadFile(video) : undefined]);
-
-  return { file: inputFile, video: inputVideo, videoStartTs: inputVideo ? videoStartTs : undefined };
+export async function uploadAvatar(_params: ApiAvatarUpload) {
+  throw new Error('NEOGRAM_AVATAR_UPLOAD_NOT_SUPPORTED');
 }
 
-export function updateTwoFaSettings(params: TwoFaParams) {
-  return client.updateTwoFaSettings(params);
+export async function updateTwoFaSettings(_params: TwoFaParams) {
+  throw new Error('NEOGRAM_TWO_FA_NOT_SUPPORTED');
 }
 
-export function getTmpPassword(currentPassword: string, ttl?: number) {
-  return client.getTmpPassword(currentPassword, ttl);
+export async function getTmpPassword(
+  _currentPassword: string,
+  _ttl?: number,
+) {
+  throw new Error('NEOGRAM_TWO_FA_NOT_SUPPORTED');
 }
 
-export function getCurrentPassword(currentPassword?: string) {
-  return client.getCurrentPassword(currentPassword);
+export async function getCurrentPassword(_currentPassword?: string) {
+  throw new Error('NEOGRAM_TWO_FA_NOT_SUPPORTED');
 }
 
-export function abortChatRequests(params: { chatId: string; threadId?: ThreadId }) {
-  const { chatId, threadId } = params;
-  const controller = CHAT_ABORT_CONTROLLERS.get(chatId);
-  if (!threadId) {
-    controller?.abort('Chat change');
-    CHAT_ABORT_CONTROLLERS.delete(chatId);
-    return;
-  }
+export function abortChatRequests(params: {
+  chatId: string;
+  threadId?: ThreadId;
+}) {
+  const controller = CHAT_ABORT_CONTROLLERS.get(params.chatId);
 
-  controller?.abortThread(threadId, 'Thread change');
+  controller?.abort();
+  CHAT_ABORT_CONTROLLERS.delete(params.chatId);
 }
 
 export function abortRequestGroup(group: string) {
@@ -505,306 +692,65 @@ export function abortRequestGroup(group: string) {
   ABORT_CONTROLLERS.delete(group);
 }
 
-export async function fetchCurrentUser() {
-  const userFull = await invokeRequest(new GramJs.users.GetFullUser({
-    id: new GramJs.InputUserSelf(),
-  }));
-
-  if (!userFull || !(userFull.users[0] instanceof GramJs.User)) {
-    return;
-  }
-
-  const user = userFull.users[0];
-
-  addUserToLocalDb(user);
-  const currentUserFullInfo = buildApiUserFullInfo(userFull);
-  const currentUser = buildApiUser(user)!;
-
-  setMessageBuilderCurrentUserId(currentUser.id);
-  onCurrentUserUpdate(currentUser, currentUserFullInfo);
-
-  currentUserId = currentUser.id;
-  setIsPremium({ isPremium: Boolean(currentUser.isPremium) });
+export function dispatchErrorUpdate<T extends GramJs.AnyRequest>(
+  error: Error,
+  _request: T,
+) {
+  emitError(error);
 }
 
-export function dispatchErrorUpdate<T extends GramJs.AnyRequest>(err: Error, request: T) {
-  const { message, code } = buildApiError(err);
-
-  const isSlowMode = err instanceof errors.FloodError && (
-    request instanceof GramJs.messages.SendMessage
-    || request instanceof GramJs.messages.SendMedia
-    || request instanceof GramJs.messages.SendMultiMedia
-  );
-
-  sendApiUpdate({
-    '@type': 'error',
-    error: {
-      message,
-      code,
-      isSlowMode,
-      hasErrorKey: true,
-    },
-  });
+export function requestChannelDifference(_channelId: string) {
+  // No MTProto channel differences in NeoGram.
 }
 
-function dispatchNotSupportedInFrozenAccountUpdate<T extends GramJs.AnyRequest>(err: Error, request: T) {
-  if (!(err instanceof RPCError)) return;
-  const message = err.errorMessage;
-
-  if (
-    request instanceof GramJs.messages.GetPinnedDialogs
-    || request instanceof GramJs.phone.GetGroupParticipants
-    || request instanceof GramJs.channels.GetParticipant
-    || request instanceof GramJs.channels.GetParticipants
-    || request instanceof GramJs.messages.GetForumTopics) {
-    return;
-  }
-
-  sendApiUpdate({
-    '@type': 'notSupportedInFrozenAccount',
-    error: {
-      message,
-    },
-  });
+export function setOpenedChannelIds(_channelIds: string[]) {
+  // Chat state is loaded through the NeoGram Worker.
 }
 
-async function handleTerminatedSession() {
-  try {
-    await invokeRequest(new GramJs.users.GetFullUser({
-      id: new GramJs.InputUserSelf(),
-    }), {
-      shouldThrow: true,
-    });
-  } catch (err: any) {
-    if (
-      err.errorMessage === 'AUTH_KEY_UNREGISTERED'
-      || err.errorMessage === 'SESSION_REVOKED'
-      || err.errorMessage === 'USER_DEACTIVATED'
-    ) {
-      sendApiUpdate({
-        '@type': 'updateConnectionState',
-        connectionState: 'connectionStateBroken',
-      });
-    }
-  }
+export function setForceHttpTransport(_forceHttpTransport: boolean) {
+  // Transport configuration is not applicable to the Worker.
 }
 
-export async function repairFileReference({
-  url,
-}: {
-  url: string;
-}) {
-  const parsed = parseMediaUrl(url);
-  if (!parsed) return undefined;
+export function setAllowHttpTransport(_allowHttpTransport: boolean) {
+  // Transport configuration is not applicable to the Worker.
+}
 
-  const {
-    entityId, mediaMatchType,
-  } = parsed;
+export function setShouldDebugExportedSenders(_value: boolean) {
+  // MTProto sender debugging is disabled.
+}
 
-  if (mediaMatchType === 'document' || mediaMatchType === 'photo' || mediaMatchType === 'webDocument') {
-    const entity = mediaMatchType === 'document'
-      ? localDb.documents[entityId] : mediaMatchType === 'webDocument'
-        ? localDb.webDocuments[entityId] : localDb.photos[entityId];
-    if (!entity) return false;
-    const repairableEntity = entity as RepairInfo;
-    if (!repairableEntity.localRepairInfo) return false;
-    const { localRepairInfo } = repairableEntity;
+export function cancelWebTokenAuthorization(
+  _params: { token: string },
+): Promise<boolean | undefined> {
+  return Promise.resolve(false);
+}
 
-    if (localRepairInfo.type === 'story') {
-      const result = await repairStoryMedia(localRepairInfo.peerId, localRepairInfo.id);
-      return result;
-    }
-
-    if (localRepairInfo.type === 'message') {
-      const result = await repairMessageMedia(localRepairInfo.peerId, localRepairInfo.id);
-      return result;
-    }
-
-    if (localRepairInfo.type === 'webPage') {
-      const result = await repairWebPageMedia(localRepairInfo.url);
-      return result;
-    }
-
-    if (localRepairInfo.type === 'savedMusic') {
-      const result = await repairSavedMusicMedia(localRepairInfo.peerId, entityId);
-      return result;
-    }
-
-    if (localRepairInfo.type === 'inlineBot') {
-      const result = await repairInlineBotMedia(localRepairInfo, entityId);
-      return result;
-    }
-  }
-
+export async function repairFileReference(_params: { url: string }) {
   return false;
 }
 
-async function repairSavedMusicMedia(peerId: string, documentId: string) {
-  const id = buildInputUserFromLocalDb(peerId);
-  const document = localDb.documents[documentId];
-  if (!id || !document) return false;
-
-  const result = await invokeRequest(new GramJs.users.GetSavedMusicByID({
-    id,
-    documents: [new GramJs.InputDocument({
-      id: document.id,
-      accessHash: document.accessHash,
-      fileReference: document.fileReference,
-    })],
-  }), {
-    shouldIgnoreErrors: true,
-  });
-
-  if (!(result instanceof GramJs.users.SavedMusic)) return false;
-
-  result.documents.forEach((doc) => {
-    addDocumentToLocalDb(addSavedMusicRepairInfo(doc, peerId));
-  });
-
-  return true;
+export async function repairWebPageMedia(_url: string) {
+  return false;
 }
 
-async function repairInlineBotMedia(repairInfo: InlineBotRepairInfo, documentId: string) {
-  const bot = buildInputUserFromLocalDb(repairInfo.botId);
-  const peer = buildInputPeerFromLocalDb(repairInfo.peerId);
-  if (!bot || !peer) return false;
+export async function refreshWorkerSession(token: string) {
+  const result = await restoreWorkerSession(token);
 
-  const result = await invokeRequest(new GramJs.messages.GetInlineBotResults({
-    bot,
-    peer,
-    query: repairInfo.query,
-    offset: repairInfo.offset ?? DEFAULT_PRIMITIVES.STRING,
-  }), {
-    shouldIgnoreErrors: true,
-  });
-  if (!result) return false;
+  currentUserId = result.user.id;
 
-  let isRepaired = false;
-  result.results.forEach((item) => {
-    if (!(item instanceof GramJs.BotInlineMediaResult) || !(item.document instanceof GramJs.Document)) return;
+  await syncWorkerData();
 
-    addDocumentToLocalDb(addInlineBotRepairInfo(item.document, repairInfo));
-    if (String(item.document.id) === documentId) isRepaired = true;
-  });
-
-  return isRepaired;
+  return result;
 }
 
-async function repairMessageMedia(peerId: string, messageId: number) {
-  const type = getEntityTypeById(peerId);
-  const inputChannel = buildInputChannelFromLocalDb(peerId);
-  let result;
-
-  if (type === 'channel' && inputChannel) {
-    result = await invokeRequest(new GramJs.channels.GetMessages({
-      channel: inputChannel,
-      id: [new GramJs.InputMessageID({ id: messageId })],
-    }), {
-      shouldIgnoreErrors: true,
-    });
-  } else {
-    result = await invokeRequest(
-      new GramJs.messages.GetMessages({
-        id: [new GramJs.InputMessageID({ id: messageId })],
-      }),
-      {
-        shouldIgnoreErrors: true,
-      },
-    );
-  }
-
-  if (!result || result instanceof GramJs.messages.MessagesNotModified) return false;
-
-  if (inputChannel && 'pts' in result) {
-    updateChannelState(peerId, result.pts);
-  }
-
-  const message = result.messages[0];
-  if (message instanceof GramJs.MessageEmpty) return false;
-
-  processMessageAndUpdateThreadInfo(message);
-
-  const apiMessage = buildApiMessage(message);
-  if (apiMessage) {
-    sendApiUpdate({
-      '@type': 'updateMessage',
-      chatId: apiMessage.chatId,
-      id: apiMessage.id,
-      message: apiMessage,
-    });
-  }
-  return true;
+export function getWorkerCursor() {
+  return currentCursor;
 }
 
-async function repairStoryMedia(peerId: string, storyId: number) {
-  const peer = buildInputPeerFromLocalDb(peerId);
-  if (!peer) return false;
-
-  const result = await invokeRequest(new GramJs.stories.GetStoriesByID({
-    peer,
-    id: [storyId],
-  }), {
-    shouldIgnoreErrors: true,
-  });
-  if (!result) return false;
-
-  result.stories.forEach((story) => {
-    const apiStory = buildApiStory(peerId, story);
-    if (!apiStory || 'isDeleted' in apiStory) return;
-
-    addStoryToLocalDb(story, peerId);
-    sendApiUpdate({
-      '@type': 'updateStory',
-      peerId,
-      story: apiStory,
-    });
-  });
-  return true;
+export function getNeoGramCurrentUser() {
+  return getCurrentWorkerUser();
 }
 
-export async function repairWebPageMedia(url: string) {
-  const result = await invokeRequest(new GramJs.messages.GetWebPage({
-    url,
-    hash: DEFAULT_PRIMITIVES.INT,
-  }), {
-    shouldIgnoreErrors: true,
-  });
-
-  if (!result?.webpage) return false;
-  const webPage = buildWebPage(result.webpage);
-  if (!webPage) return false;
-
-  addWebPageMediaToLocalDb(result.webpage);
-  sendApiUpdate({
-    '@type': 'updateWebPage',
-    webPage,
-  });
-
-  return webPage.webpageType === 'full';
-}
-
-export function setForceHttpTransport(forceHttpTransport: boolean) {
-  client.setForceHttpTransport(forceHttpTransport);
-}
-
-export function setAllowHttpTransport(allowHttpTransport: boolean) {
-  client.setAllowHttpTransport(allowHttpTransport);
-}
-
-export function setShouldDebugExportedSenders(value: boolean) {
-  client.setShouldDebugExportedSenders(value);
-}
-
-export function requestChannelDifference(channelId: string) {
-  requestChannelDifferenceFromUpdates(channelId);
-}
-
-export function setOpenedChannelIds(channelIds: string[]) {
-  setOpenedChannelIdsInUpdates(channelIds);
-}
-
-export function cancelWebTokenAuthorization({ token }: { token: string }): Promise<boolean | undefined> {
-  return invokeRequest(new GramJs.auth.CancelWebTokenAuthorization({ webAuthToken: token }), {
-    shouldIgnoreErrors: true,
-  });
+export function getNeoGramCurrentProfile() {
+  return getCurrentWorkerProfile();
 }
