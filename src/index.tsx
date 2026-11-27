@@ -1,4 +1,3 @@
-
 /* eslint-disable simple-import-sort/imports -- Preserve original startup order */
 
 import { getPendingWebLogin } from './util/routing';
@@ -67,8 +66,7 @@ async function init() {
   await webLoginHandoffPromise;
 
   if (DEBUG) {
-    // eslint-disable-next-line no-console
-    console.log('>>> INIT');
+    console.log('[NeoGram] INIT');
   }
 
   if (!(window as any).isCompatTestPassed) return;
@@ -115,11 +113,6 @@ async function init() {
 
   establishMultitabRole(shouldReestablishMasterToSelf);
 
-  if (DEBUG) {
-    // eslint-disable-next-line no-console
-    console.log('>>> START INITIAL RENDER');
-  }
-
   requestMutation(() => {
     updateWebmanifest();
 
@@ -131,11 +124,6 @@ async function init() {
     betterView();
   });
 
-  if (DEBUG) {
-    // eslint-disable-next-line no-console
-    console.log('>>> FINISH INITIAL RENDER');
-  }
-
   await initializeNeoGramAddon();
 
   if (DEBUG) {
@@ -143,14 +131,10 @@ async function init() {
       const currentGlobal = getGlobal();
       const currentMessageList = selectCurrentMessageList(currentGlobal);
 
-      // eslint-disable-next-line no-console
       console.warn('TAB STATE', selectTabState(currentGlobal));
-
-      // eslint-disable-next-line no-console
       console.warn('GLOBAL STATE', currentGlobal);
 
       if (currentMessageList) {
-        // eslint-disable-next-line no-console
         console.warn(
           'CURRENT MESSAGE LIST',
           selectChat(currentGlobal, currentMessageList.chatId),
@@ -166,28 +150,19 @@ async function initializeNeoGramAddon() {
   const root = document.getElementById('root');
 
   if (!root) {
-    console.error('[NeoGram] Telegram root not found');
+    console.error('[NeoGram] Application root not found');
     return;
   }
 
-  try {
-    window.dispatchEvent(
-      new CustomEvent('neogram:telegram-ready', {
-        detail: {
-          root,
-          apiUrl: 'https://tg-api.matveyverus9.workers.dev',
-          isTauri: IS_TAURI,
-        },
-      }),
-    );
-
-    if (DEBUG) {
-      // eslint-disable-next-line no-console
-      console.log('[NeoGram] Telegram integration ready');
-    }
-  } catch (error) {
-    console.error('[NeoGram] Initialization failed:', error);
-  }
+  window.dispatchEvent(
+    new CustomEvent('neogram:telegram-ready', {
+      detail: {
+        root,
+        apiUrl: 'https://tg-api.neogram.workers.dev',
+        isTauri: IS_TAURI,
+      },
+    }),
+  );
 }
 
 async function loadPasscodeActions() {
