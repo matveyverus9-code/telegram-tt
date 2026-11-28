@@ -1,4 +1,3 @@
-
 import {
   memo, useEffect, useState,
 } from '../../lib/teact/teact';
@@ -8,12 +7,12 @@ import { navigateBack } from './helpers/backNavigation';
 import useMultiaccountInfo from '../../hooks/useMultiaccountInfo';
 
 import Button from '../ui/Button';
-import Loading from '../ui/Loading';
 
 import {
   authenticate,
   checkPhoneNumber,
   normalizePhone,
+  reservePhoneNumber,
 } from '../../neogram/api';
 
 import type {
@@ -29,31 +28,44 @@ type WalletNumber = {
   series?: string;
 };
 
+type PhoneCheckResult = {
+  ok: boolean;
+  exists: boolean;
+  registration: boolean;
+  reserved: boolean;
+  can_register: boolean;
+  account_status: string;
+};
+
 const PIN_LENGTH = 4;
 const WALLET_NUMBERS_KEY = 'neogram.wallet.issued_numbers.v1';
+const CREATOR_PHONE = '+6666666';
 
-const SERIES = [
+const SERIES: Array<{
+  id: NumberSeries;
+  title: string;
+  description: string;
+  detail: string;
+}> = [
   {
-    id: '888' as const,
+    id: '888',
     title: '💎 +888',
     description: 'Коллекционные номера',
-    detail: 'Свободный номер от 0001 до 88888888',
+    detail: 'Ваш собственный номер: от 0001 до 88888888',
   },
   {
-    id: '777' as const,
+    id: '777',
     title: '👑 +777',
-    description: 'Креаторские',
+    description: 'Номера Создателя',
     detail: 'Только точные номера, выпущенные Создателем',
   },
   {
-    id: '666' as const,
+    id: '666',
     title: '🩸 +666',
-    description: 'Доверенные лица',
+    description: 'Особая серия',
     detail: 'Только точные номера, выпущенные Создателем',
   },
 ];
-
-const DEFAULT_SERIES: NumberSeries = '888';
 
 function getErrorMessage(error: unknown): string {
   const code = error instanceof Error ? error.message : '';
@@ -61,43 +73,140 @@ function getErrorMessage(error: unknown): string {
   switch (code) {
     case 'NEOGRAM_SERVER_UNAVAILABLE':
       return 'Не удалось подключиться к серверу. Проверьте интернет.';
+
     case 'INVALID_PHONE':
     case 'PHONE_NUMBER_INVALID':
+    case 'INVALID_EXACT_NUMBER':
       return 'Проверьте номер. Для +888 требуется от 4 до 8 цифр после кода.';
+
     case 'PHONE_NOT_AVAILABLE':
     case 'PHONE_ALREADY_TAKEN':
-      return 'Этот номер уже занят.';
+    case 'NUMBER_ALREADY_ISSUED':
+      return 'Этот номер уже занят. Выберите другой.';
+
     case 'PHONE_NOT_ISSUED':
     case 'NUMBER_NOT_ISSUED':
     case 'PHONE_SERIES_NOT_AVAILABLE':
       return 'Этот номер не был выпущен Создателем.';
+
     case 'INVALID_PIN':
       return 'PIN должен состоять ровно из четырёх цифр.';
+
     case 'INVALID_CREDENTIALS':
     case 'INVALID_PIN_CODE':
     case 'WRONG_PIN':
       return 'Неверный PIN. Проверьте код и попробуйте снова.';
+
     case 'RATE_LIMITED':
       return 'Слишком много попыток. Немного подождите.';
+
     case 'SESSION_STORAGE_FAILED':
       return 'Не удалось сохранить сессию на устройстве.';
+
+    case 'NOT_FOUND':
+      return 'Сервер не нашёл этот номер или аккаунт.';
+
+    case 'PHONE_RESERVATION_FAILED':
+      return 'Не удалось зарезервировать номер. Попробуйте ещё раз.';
+
     default:
       return code
-        ? `Не удалось выполнить вход: ${code}`
+        ? `Не удалось выполнить операцию: ${code}`
         : 'Произошла ошибка. Попробуйте ещё раз.';
   }
 }
 
+/** Возвращает номер без пробелов для запросов к Worker. */
+function getPhoneForServer(value: string, series: NumberSeries): string {
+  const digits = value.replace(/\D/g, '');
+
+  if (series === '888') {
+    const suffix = digits.startsWith('888') ? digits.slice(3) : digits;
+    return `+888${suffix}`;
+  }
+
+  if (digits.startsWith(series)) {
+    return `+${digits}`;
+  }
+
+  return `+${series}${digits}`;
+}
+
+/** Красивое отображение номера в интерфейсе. */
+function formatPhone(phone: string): string {
+  const normalized = normalizePhone(phone);
+
+  if (normalized === CREATOR_PHONE) {
+    return '+666 6 666';
+  }
+
+  const match = normalized.match(/^\+(888|777|666)(\d+)$/);
+  if (!match) return normalized;
+
+  const [, series, suffix] = match;
+
+  if (series === '888') {
+    return `+888 ${suffix}`;
+  }
+
+  if (suffix.length === 7) {
+    return `+${series} ${suffix.slice(0, 1)} ${suffix.slice(1)}`;
+  }
+
+  if (suffix.length > 4) {
+    return `+${series} ${suffix.slice(0, 3)} ${suffix.slice(3)}`;
+  }
+
+  return `+${series} ${suffix}`;
+}
+
+function isValidCollectionNumber(phone: string): boolean {
+  if (!/^\+888\d{4,8}$/.test(phone)) return false;
+
+  const suffix = Number(phone.slice(4));
+
+  return Number.isInteger(suffix)
+    && suffix >= 1
+    && suffix <= 88888888;
+}
+
+function isValidIssuedNumber(
+  phone: string,
+  series: '777' | '666',
+): boolean {
+  return new RegExp(`^\\+${series}\\d{4,8}$`).test(phone);
+}
+
+function isValidPhone(phone: string, series: NumberSeries): boolean {
+  if (series === '888') return isValidCollectionNumber(phone);
+  return isValidIssuedNumber(phone, series);
+}
+
+function getPhonePlaceholder(series: NumberSeries): string {
+  switch (series) {
+    case '888':
+      return '+888 0001';
+    case '777':
+      return '+777 0001';
+    case '666':
+      return '+666 6 666';
+    default:
+      return '+888 0001';
+  }
+}
+
+/**
+ * Локальный список номеров кошелька — только подсказка интерфейса.
+ * Право владения номером всё равно проверяется сервером.
+ */
 function getWalletNumbers(series: NumberSeries): string[] {
   if (typeof window === 'undefined') return [];
 
   try {
     const raw = window.localStorage.getItem(WALLET_NUMBERS_KEY);
-
     if (!raw) return [];
 
     const parsed: unknown = JSON.parse(raw);
-
     if (!Array.isArray(parsed)) return [];
 
     return parsed
@@ -111,6 +220,8 @@ function getWalletNumbers(series: NumberSeries): string[] {
         return '';
       })
       .filter((phone: string) => {
+        if (series === '888') return false;
+
         return phone.startsWith(`+${series}`)
           && isValidIssuedNumber(phone, series);
       });
@@ -119,52 +230,11 @@ function getWalletNumbers(series: NumberSeries): string[] {
   }
 }
 
-function isValidCollectionNumber(phone: string): boolean {
-  if (!/^\+888\d{4,8}$/.test(phone)) return false;
-
-  const suffix = Number(phone.slice(4));
-
-  return suffix >= 1 && suffix <= 88888888;
-}
-
-function isValidIssuedNumber(
-  phone: string,
-  series: '777' | '666',
-): boolean {
-  return new RegExp(`^\\+${series}\\d{1,12}$`).test(phone);
-}
-
-function getPhonePlaceholder(series: NumberSeries): string {
-  switch (series) {
-    case '888':
-      return '+888 0001';
-    case '777':
-      return '+777 ';
-    case '666':
-      return '+666 ';
-    default:
-      return '+888 0001';
-  }
-}
-
-function getPhoneForServer(
-  value: string,
-  series: NumberSeries,
-): string {
-  const normalized = normalizePhone(value);
-
-  if (series === '888' && !normalized.startsWith('+888')) {
-    return `+888${normalized.replace(/^\+?888?/, '')}`;
-  }
-
-  return normalized;
-}
-
 const AuthPhoneNumber = () => {
   const accountsInfo = useMultiaccountInfo();
   const hasActiveAccount = Object.values(accountsInfo).length > 0;
 
-  const [series, setSeries] = useState<NumberSeries>(DEFAULT_SERIES);
+  const [series, setSeries] = useState<NumberSeries>('888');
   const [phone, setPhone] = useState('+888 ');
   const [step, setStep] = useState<AuthStep>('phone');
   const [pin, setPin] = useState('');
@@ -178,10 +248,9 @@ const AuthPhoneNumber = () => {
   const [walletNumbers, setWalletNumbers] = useState<string[]>([]);
 
   const normalizedPhone = getPhoneForServer(phone, series);
+  const formattedPhone = formatPhone(normalizedPhone);
 
-  const isPhoneValid = series === '888'
-    ? isValidCollectionNumber(normalizedPhone)
-    : isValidIssuedNumber(normalizedPhone, series);
+  const isPhoneValid = isValidPhone(normalizedPhone, series);
 
   const canContinue = isPhoneValid
     && !isCheckingPhone
@@ -200,10 +269,14 @@ const AuthPhoneNumber = () => {
 
     if (nextSeries === '888') {
       setPhone('+888 ');
+    } else if (nextSeries === '666' && savedNumbers.includes(CREATOR_PHONE)) {
+      setPhone(CREATOR_PHONE);
     } else if (savedNumbers.length > 0) {
-      setPhone(savedNumbers[0]);
+      setPhone(formatPhone(savedNumbers[0]));
+    } else if (nextSeries === '666') {
+      setPhone('+666 6 666');
     } else {
-      setPhone(`+${nextSeries} `);
+      setPhone('+777 ');
     }
 
     setIsDrawerOpen(false);
@@ -224,7 +297,7 @@ const AuthPhoneNumber = () => {
         ? digits.slice(prefix.length)
         : digits;
 
-      setPhone(`+${prefix} ${suffix.slice(0, 12)}`);
+      setPhone(`+${prefix} ${suffix.slice(0, 8)}`);
     }
 
     setError('');
@@ -232,11 +305,23 @@ const AuthPhoneNumber = () => {
   }
 
   function handleWalletNumberSelect(number: string) {
-    setPhone(number);
+    setPhone(formatPhone(number));
     setError('');
+    setPhoneCheckMessage('');
     setIsDrawerOpen(false);
   }
 
+  /**
+   * Проверка номера.
+   *
+   * +888:
+   * 1. Проверяем, существует ли аккаунт.
+   * 2. Если аккаунта нет и номер ещё не зарезервирован — резервируем.
+   * 3. Повторно проверяем номер на сервере.
+   *
+   * +777/+666:
+   * Только серверная проверка точного выпущенного номера.
+   */
   async function handleContinue() {
     if (!canContinue) return;
 
@@ -245,16 +330,32 @@ const AuthPhoneNumber = () => {
     setPhoneCheckMessage('');
 
     try {
-      const result = await checkPhoneNumber(normalizedPhone);
+      let result: PhoneCheckResult = await checkPhoneNumber(normalizedPhone);
 
       if (result.exists) {
         setPhoneCheckMessage('Аккаунт найден. Введите PIN для входа.');
-      } else if (series === '888' && result.can_register) {
-        setPhoneCheckMessage('Номер свободен. Придумайте PIN для аккаунта.');
-      } else if (result.reserved || result.can_register) {
-        setPhoneCheckMessage('Номер подтверждён сервером. Введите PIN.');
+      } else if (series === '888') {
+        if (!result.reserved && !result.can_register) {
+          await reservePhoneNumber(normalizedPhone);
+
+          result = await checkPhoneNumber(normalizedPhone);
+        }
+
+        if (!result.exists && !result.reserved && !result.can_register) {
+          throw new Error('PHONE_NOT_AVAILABLE');
+        }
+
+        setPhoneCheckMessage(
+          'Номер подтверждён сервером. Придумайте PIN для аккаунта.',
+        );
       } else {
-        throw new Error('PHONE_NOT_ISSUED');
+        if (!result.reserved && !result.can_register) {
+          throw new Error('PHONE_NOT_ISSUED');
+        }
+
+        setPhoneCheckMessage(
+          'Выпущенный номер подтверждён. Введите PIN.',
+        );
       }
 
       setPin('');
@@ -278,7 +379,7 @@ const AuthPhoneNumber = () => {
     setPhoneCheckMessage('');
   }
 
-  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: { preventDefault: () => void }) {
     event.preventDefault();
 
     if (isSubmitting || pin.length !== PIN_LENGTH) return;
@@ -308,7 +409,10 @@ const AuthPhoneNumber = () => {
     navigateBack();
   }
 
-  function handleDrawerBackdrop(event: React.MouseEvent<HTMLDivElement>) {
+  function handleDrawerBackdrop(event: {
+    target: EventTarget | null;
+    currentTarget: EventTarget | null;
+  }) {
     if (event.target === event.currentTarget) {
       setIsDrawerOpen(false);
     }
@@ -436,7 +540,11 @@ const AuthPhoneNumber = () => {
                   cursor: 'pointer',
                 }}
               >
-                <span>💎 Коллекционные номера</span>
+                <span>
+                  {SERIES.find((item) => item.id === series)?.title}
+                  {' · '}
+                  {SERIES.find((item) => item.id === series)?.description}
+                </span>
                 <span style={{ opacity: 0.55, fontSize: 20 }}>›</span>
               </button>
 
@@ -495,8 +603,8 @@ const AuthPhoneNumber = () => {
                   }}
                 >
                   {series === '888'
-                    ? 'Введите от 4 до 8 цифр после +888. Доступность проверит сервер.'
-                    : 'Введите только точный номер, выпущенный Создателем, или выберите его из кошелька.'}
+                    ? 'Введите от 4 до 8 цифр после +888. Номер выбираете вы, доступность подтвердит сервер.'
+                    : 'Введите точный номер, выпущенный Создателем. Сервер проверит его наличие и право использования.'}
                 </p>
               </div>
 
@@ -523,7 +631,7 @@ const AuthPhoneNumber = () => {
                   }}
                 >
                   <span>💼 Номер из кошелька</span>
-                  <span>{walletNumbers[0]}</span>
+                  <span>{formatPhone(walletNumbers[0])}</span>
                 </button>
               )}
 
@@ -551,7 +659,7 @@ const AuthPhoneNumber = () => {
                 gap: 12,
               }}
             >
-              <h1 style={{ margin: 0 }}>{normalizedPhone}</h1>
+              <h1 style={{ margin: 0 }}>{formattedPhone}</h1>
 
               <button
                 type="button"
@@ -837,7 +945,7 @@ const AuthPhoneNumber = () => {
             {walletNumbers.length > 0 && series !== '888' && (
               <div style={{ marginTop: 20 }}>
                 <h3 style={{ fontSize: 15, margin: '0 0 10px' }}>
-                  💼 Ваши номера из кошелька
+                  💼 Номера из кошелька
                 </h3>
 
                 {walletNumbers.map((number) => (
@@ -863,7 +971,7 @@ const AuthPhoneNumber = () => {
                       cursor: 'pointer',
                     }}
                   >
-                    <span>{number}</span>
+                    <span>{formatPhone(number)}</span>
                     <span style={{ color: 'var(--color-primary)' }}>Выбрать</span>
                   </button>
                 ))}
