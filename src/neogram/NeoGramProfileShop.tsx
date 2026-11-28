@@ -1,13 +1,10 @@
-import {
-  useEffect,
-  useMemo,
-  useState,
-} from '../lib/teact/teact';
+
+import { useEffect, useMemo, useState } from '../lib/teact/teact';
 import {
   apiGet,
   apiPost,
   getProfile,
-  updateProfile as saveProfileApi,
+  updateProfile,
   type NeoGramUser,
 } from './api';
 
@@ -15,13 +12,13 @@ type Tab = 'profile' | 'wallet' | 'shop' | 'gifts' | 'faq';
 type Layout = 'neogram' | 'discord' | 'twitter' | 'steam';
 type AnyRecord = Record<string, any>;
 
-const FEE = 0.1;
+const COMMISSION = 0.1;
 
 const FRAMES = [
-  { id: 'blue-neon', name: 'Blue Neon', price: 500, color: '#299cff', icon: '🔵' },
-  { id: 'prism', name: 'Prism', price: 3500, color: '#b66bff', icon: '🌈' },
-  { id: 'aurora', name: 'Aurora', price: 2200, color: '#49e2c2', icon: '🌌' },
-  { id: 'onyx', name: 'Onyx', price: 6000, color: '#777777', icon: '⚫' },
+  { id: 'blue-neon', name: 'Blue Neon', price: 500, icon: '🔵', color: '#299cff' },
+  { id: 'prism', name: 'Prism', price: 3500, icon: '🌈', color: '#b66bff' },
+  { id: 'aurora', name: 'Aurora', price: 2200, icon: '🌌', color: '#49e2c2' },
+  { id: 'onyx', name: 'Onyx', price: 6000, icon: '⚫', color: '#777777' },
 ];
 
 const NICK_STYLES = [
@@ -33,507 +30,654 @@ const NICK_STYLES = [
 const FAQ = [
   {
     q: 'Что такое GRAM?',
-    a: 'GRAM — внутренняя валюта NeoGram для покупок, подарков и операций на внутренней бирже.',
+    a: 'GRAM — внутренняя валюта NeoGram. Баланс и операции хранятся на сервере.',
   },
   {
-    q: 'Как работает комиссия биржи?',
-    a: 'При покупке лота продавцу перечисляется 90% цены, 10% составляет комиссия NeoGram.',
+    q: 'Какая комиссия на бирже?',
+    a: 'Комиссия внутренней биржи — 10%. Продавец получает 90% цены лота.',
   },
   {
-    q: 'Как привязать редкий номер?',
-    a: 'Выданный номер +777 или +666 можно привязать к текущему профилю, если он числится за вашим аккаунтом.',
+    q: 'Как получить редкий номер +777 или +666?',
+    a: 'Эти номера выпускаются Создателем вручную. При выдаче конкретного номера с указанием владельца Worker сразу добавляет его в список номеров этого аккаунта.',
   },
   {
-    q: 'Можно ли активировать +777 или +666 как новый аккаунт?',
-    a: 'Нет. Серии +777 и +666 выдаются вручную и привязываются к существующему профилю. Создание нового аккаунта через этот экран не поддерживается Worker.',
+    q: 'Можно ли создать аккаунт через +777 или +666?',
+    a: 'Нет. Текущий Worker запрещает создание нового аккаунта через специальные серии. Эти номера предназначены для выдачи и привязки к существующему профилю.',
   },
   {
-    q: 'Как получить #DEV?',
-    a: 'Тег #DEV зарезервирован для Создателя. Обычный пользователь не может занять этот тег.',
+    q: 'Можно ли загрузить аватар?',
+    a: 'В текущем Worker нет маршрута загрузки файла аватара и нет поля avatar_url в разрешённых настройках профиля. Можно выбрать файл для локального предпросмотра, но сервер его не сохранит.',
   },
   {
-    q: 'Поддерживается ли загрузка файлов аватара?',
-    a: 'Текущая версия Worker принимает URL баннера, но не предоставляет серверный маршрут загрузки файлов или сохранения avatar_url.',
+    q: 'Можно ли загрузить баннер?',
+    a: 'Да. Worker сохраняет banner_url. Укажите общедоступную ссылку на изображение и сохраните её.',
+  },
+  {
+    q: 'Как работает улучшение подарка?',
+    a: 'Улучшение стоит 300 Stars. Worker сам выбирает модель, фон, узор и редкость. После ответа сервера инвентарь перечитывается, чтобы показать сохранённый результат.',
+  },
+  {
+    q: 'Можно ли купить подарок из каталога?',
+    a: 'В текущем Worker есть каталог и улучшение уже принадлежащих подарков, но нет пользовательского маршрута покупки подарка из каталога.',
+  },
+  {
+    q: 'Что такое #DEV?',
+    a: '#DEV отображается только для аккаунта, которому Worker подтвердил статус Создателя. Обычный пользователь не может занять этот тег.',
   },
 ];
 
-const formatGram = (value: unknown) => new Intl.NumberFormat('ru-RU', {
-  maximumFractionDigits: 2,
-}).format(Number(value) || 0);
+const formatNumber = (value: unknown) =>
+  new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(Number(value) || 0);
 
-const errorText = (error: unknown) => {
-  const code = String((error as AnyRecord)?.code || (error as AnyRecord)?.message || error || '');
+const formatGram = (value: unknown) => `${formatNumber(value)} GRAM`;
+const formatStars = (value: unknown) => `${formatNumber(value)} Stars`;
+
+function asRecord(value: unknown): AnyRecord {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as AnyRecord
+    : {};
+}
+
+function prettyPhone(value: unknown): string {
+  const raw = String(value || '').replace(/[^\d+]/g, '');
+  const match = raw.match(/^\+(\d{3})(\d{4,8})$/);
+  if (!match) return raw || '—';
+
+  const prefix = `+${match[1]}`;
+  const suffix = match[2];
+
+  if (suffix.length === 4) return `${prefix} ${suffix[0]} ${suffix.slice(1)}`;
+  if (suffix.length === 5) return `${prefix} ${suffix.slice(0, 2)} ${suffix.slice(2)}`;
+  if (suffix.length === 6) return `${prefix} ${suffix.slice(0, 3)} ${suffix.slice(3)}`;
+  if (suffix.length === 7) return `${prefix} ${suffix.slice(0, 3)} ${suffix.slice(3, 5)} ${suffix.slice(5)}`;
+  return `${prefix} ${suffix.slice(0, 4)} ${suffix.slice(4)}`;
+}
+
+function getErrorMessage(error: unknown): string {
+  const code = String(
+    (error as AnyRecord)?.code ||
+    (error as AnyRecord)?.message ||
+    error ||
+    '',
+  );
+
   const messages: Record<string, string> = {
-    UNAUTHORIZED: 'Сессия не найдена. Войдите в аккаунт NeoGram.',
-    INSUFFICIENT_FUNDS: 'Недостаточно средств.',
-    NOT_OWNED: 'Этот номер или предмет не принадлежит вашему аккаунту.',
-    ALREADY_LISTED: 'Этот предмет уже выставлен на биржу.',
+    UNAUTHORIZED: 'Сессия не найдена. Войдите в NeoGram.',
+    INSUFFICIENT_FUNDS: 'Недостаточно средств на балансе.',
+    NOT_OWNED: 'Этот актив не принадлежит вашему аккаунту.',
+    ALREADY_LISTED: 'Этот актив уже выставлен на биржу.',
     UNAVAILABLE: 'Лот уже недоступен.',
+    ALREADY_SOLD: 'Лот уже куплен другим пользователем.',
     NOT_FOUND: 'Запись не найдена.',
     PROFILE_PHONE_LIMIT: 'Достигнут лимит привязанных номеров.',
     INVALID_LAYOUT: 'Недопустимый макет профиля.',
     RESERVED: 'Это имя зарезервировано.',
     TAKEN: 'Это имя уже занято.',
+    INVALID_USERNAME: 'Username должен содержать 3–10 символов: латинские буквы, цифры или _.',
+    SPECIAL_PHONE_ADMIN_ONLY: 'Создание аккаунта через +777/+666 запрещено.',
+    INVALID_TRANSFER: 'Не удалось передать подарок.',
   };
+
   return messages[code] || code || 'Не удалось выполнить запрос.';
-};
-
-function asRecord(value: unknown): AnyRecord {
-  return value && typeof value === 'object' ? value as AnyRecord : {};
-}
-
-function prettyPhone(value: string) {
-  const raw = String(value || '').replace(/\s/g, '');
-  const match = raw.match(/^\+(\d{3})(\d{4,8})$/);
-  if (!match) return value;
-  const suffix = match[2];
-  if (suffix.length === 4) return `+${match[1]} ${suffix[0]} ${suffix.slice(1)}`;
-  if (suffix.length === 5) return `+${match[1]} ${suffix.slice(0, 2)} ${suffix.slice(2)}`;
-  if (suffix.length === 6) return `+${match[1]} ${suffix.slice(0, 3)} ${suffix.slice(3)}`;
-  if (suffix.length === 7) return `+${match[1]} ${suffix.slice(0, 3)} ${suffix.slice(3, 5)} ${suffix.slice(5)}`;
-  return `+${match[1]} ${suffix.slice(0, 4)} ${suffix.slice(4)}`;
 }
 
 export default function NeoGramProfileShop() {
   const [tab, setTab] = useState<Tab>('profile');
   const [layout, setLayout] = useState<Layout>('neogram');
+
   const [user, setUser] = useState<NeoGramUser | null>(null);
   const [wallet, setWallet] = useState<AnyRecord>({});
-  const [market, setMarket] = useState<AnyRecord>({ listings: [], commission: FEE });
+  const [market, setMarket] = useState<AnyRecord>({ listings: [], commission: COMMISSION });
   const [gifts, setGifts] = useState<AnyRecord>({ catalog: [], owned: [] });
-  const [profile, setProfile] = useState<AnyRecord>({
-    banner_url: '',
-    links: {},
-    channel: '',
-    avatar_filter: 'none',
-    banner_filter: 'none',
-    avatar_frame: '',
-    frame_color: '',
-    nick_font: '',
-    nick_color: '',
-    nick_gradient: '',
-    nick_glow: '',
-  });
+
   const [bannerUrl, setBannerUrl] = useState('');
+  const [avatarPreview, setAvatarPreview] = useState('');
   const [discord, setDiscord] = useState('');
   const [twitter, setTwitter] = useState('');
   const [steam, setSteam] = useState('');
   const [username, setUsername] = useState('');
-  const [usernamePrice, setUsernamePrice] = useState<number | null>(null);
-  const [listingPrice, setListingPrice] = useState('100');
-  const [listingAsset, setListingAsset] = useState('');
   const [fragmentSearch, setFragmentSearch] = useState('');
   const [fragmentResult, setFragmentResult] = useState<AnyRecord | null>(null);
-  const [numberToBind, setNumberToBind] = useState('');
+  const [numberToAttach, setNumberToAttach] = useState('');
+
+  const [listingAsset, setListingAsset] = useState('');
+  const [listingPrice, setListingPrice] = useState('100');
+
   const [selectedGift, setSelectedGift] = useState('');
   const [rouletteResult, setRouletteResult] = useState<AnyRecord | null>(null);
   const [rouletteBusy, setRouletteBusy] = useState(false);
+
   const [expandedFaq, setExpandedFaq] = useState<number | null>(0);
   const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
 
-  const isCreator = Number(user?.is_creator) === 1;
-  const userProfile = asRecord(user?.profile);
-  const socialLinks = asRecord(userProfile.links);
+  const profile = asRecord(user?.profile);
+  const socialLinks = asRecord(profile.links);
   const phones = Array.isArray(user?.phones) ? user!.phones as AnyRecord[] : [];
   const ownedGifts = Array.isArray(gifts.owned) ? gifts.owned as AnyRecord[] : [];
   const giftCatalog = Array.isArray(gifts.catalog) ? gifts.catalog as AnyRecord[] : [];
   const listings = Array.isArray(market.listings) ? market.listings as AnyRecord[] : [];
-  const gram = Number(wallet.gram ?? user?.gram ?? 0);
 
-  const notify = (message: string) => setNotice(message);
+  const isCreator = Number(user?.is_creator) === 1;
+  const gram = Number(wallet.gram ?? user?.gram ?? 0);
+  const stars = Number(wallet.stars ?? user?.stars ?? 0);
+
+  const visibleListings = useMemo(
+    () => listings.filter((item) => item.status === 'open'),
+    [listings],
+  );
 
   const refresh = async () => {
-    setLoading(true);
-    try {
-      const [nextUser, nextWallet, nextMarket, nextGifts] = await Promise.all([
-        getProfile<NeoGramUser>(),
-        apiGet<AnyRecord>('/wallet'),
-        apiGet<AnyRecord>('/market'),
-        apiGet<AnyRecord>('/gifts'),
-      ]);
+    const [profileResult, walletResult, marketResult, giftsResult] = await Promise.all([
+      getProfile<NeoGramUser>(),
+      apiGet<AnyRecord>('/wallet'),
+      apiGet<AnyRecord>('/market'),
+      apiGet<AnyRecord>('/gifts'),
+    ]);
 
-      setUser(nextUser);
-      setWallet(nextWallet || {});
-      setMarket(nextMarket || { listings: [], commission: FEE });
-      setGifts(nextGifts || { catalog: [], owned: [] });
+    setUser(profileResult);
+    setWallet(walletResult || {});
+    setMarket(marketResult || { listings: [], commission: COMMISSION });
+    setGifts(giftsResult || { catalog: [], owned: [] });
 
-      const nextProfile = asRecord(nextUser.profile);
-      setProfile(nextProfile);
-      setBannerUrl(String(nextProfile.banner_url || ''));
-      const links = asRecord(nextProfile.links);
-      setDiscord(String(links.discord || ''));
-      setTwitter(String(links.twitter || ''));
-      setSteam(String(links.steam || ''));
-      setUsername(String(nextUser.username || ''));
-    } catch (error) {
-      notify(errorText(error));
-    } finally {
-      setLoading(false);
+    const savedProfile = asRecord(profileResult.profile);
+    setBannerUrl(String(savedProfile.banner_url || ''));
+    setDiscord(String(asRecord(savedProfile.links).discord || ''));
+    setTwitter(String(asRecord(savedProfile.links).twitter || ''));
+    setSteam(String(asRecord(savedProfile.links).steam || ''));
+
+    if (profileResult.username) {
+      setUsername(String(profileResult.username));
     }
   };
 
   useEffect(() => {
-    void refresh();
+    let active = true;
+
+    const initialLoad = async () => {
+      setLoading(true);
+      try {
+        await refresh();
+      } catch (error) {
+        if (active) setNotice(getErrorMessage(error));
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+
+    void initialLoad();
+
+    return () => {
+      active = false;
+    };
   }, []);
 
-  const setProfileValue = (key: string, value: unknown) => {
-    setProfile((previous: AnyRecord) => ({ ...previous, [key]: value }));
-  };
+  const run = async (operation: () => Promise<unknown>, successMessage: string) => {
+    if (busy) return;
 
-  const persistProfile = async (patch: AnyRecord) => {
     setBusy(true);
+    setNotice('');
+
     try {
-      const result = await saveProfileApi(patch);
-      const saved = asRecord(result);
-      const next = asRecord(saved.profile || { ...profile, ...patch });
-      setProfile(next);
-      notify('Профиль сохранён на сервере.');
+      await operation();
       await refresh();
+      setNotice(successMessage);
     } catch (error) {
-      notify(errorText(error));
+      setNotice(getErrorMessage(error));
     } finally {
       setBusy(false);
     }
-  };
-
-  const saveSocialLinks = async () => {
-    await persistProfile({
-      links: { discord: discord.trim(), twitter: twitter.trim(), steam: steam.trim() },
-    });
   };
 
   const saveBanner = async () => {
     const value = bannerUrl.trim();
-    if (value && !/^https?:\/\//i.test(value)) {
-      notify('Укажите полный HTTP(S) URL изображения.');
+
+    if (value && !/^https?:\/\/\S+$/i.test(value)) {
+      setNotice('Укажите корректную ссылку https:// на изображение.');
       return;
     }
-    await persistProfile({ banner_url: value });
+
+    await run(
+      () => updateProfile({ banner_url: value }),
+      'Баннер сохранён на сервере.',
+    );
   };
 
-  const claimUsername = async () => {
-    const name = username.trim().replace(/^@/, '').toLowerCase();
+  const saveSocialLinks = async () => {
+    await run(
+      () => updateProfile({
+        links: {
+          discord: discord.trim(),
+          twitter: twitter.trim(),
+          steam: steam.trim(),
+        },
+      }),
+      'Ссылки Discord, Twitter и Steam сохранены.',
+    );
+  };
+
+  const saveLayout = async (nextLayout: Layout) => {
+    setLayout(nextLayout);
+
+    if (nextLayout === 'neogram') {
+      setNotice('Макет NeoGram выбран для предпросмотра.');
+      return;
+    }
+
+    await run(
+      () => updateProfile({ layout: nextLayout }),
+      `Макет ${nextLayout} сохранён.`,
+    );
+  };
+
+  const claimUsername = async (requestedName?: string) => {
+    const name = (requestedName || username).trim().replace(/^@/, '').toLowerCase();
+
     if (!/^[a-z0-9_]{3,10}$/.test(name)) {
-      notify('Ник должен содержать 3–10 символов: латиница, цифры и _.');
+      setNotice('Username должен содержать 3–10 символов: латинские буквы, цифры или _.');
       return;
     }
-    setBusy(true);
-    try {
-      const result = await apiPost<AnyRecord>('/usernames/claim', { username: name });
-      setUsername(String(result.username || `@${name}`).replace(/^@/, ''));
-      setUsernamePrice(Number(result.price_gram || 0));
-      notify(`Ник @${name} приобретён за ${formatGram(result.price_gram)} GRAM.`);
-      await refresh();
-    } catch (error) {
-      notify(errorText(error));
-    } finally {
-      setBusy(false);
-    }
-  };
 
-  const bindPhone = async (phone: string) => {
-    setBusy(true);
-    try {
-      await apiPost('/assets/use-phone', { phone: phone.replace(/\s/g, '') });
-      notify(`${prettyPhone(phone)} привязан к профилю.`);
-      setNumberToBind('');
-      await refresh();
-    } catch (error) {
-      notify(errorText(error));
-    } finally {
-      setBusy(false);
-    }
+    await run(async () => {
+      const result = await apiPost<AnyRecord>('/usernames/claim', { username: name });
+
+      if (result.username) setUsername(String(result.username).replace(/^@/, ''));
+
+      if (name === 'dev') {
+        setNotice('Worker подтвердил регистрацию @dev. Обратите внимание: текущий маршрут Worker возвращает цену, но не списывает GRAM за username.');
+      }
+    }, `Username @${name} обработан сервером.`);
   };
 
   const searchFragment = async () => {
-    if (!fragmentSearch.trim()) {
-      notify('Введите номер или @username.');
+    const query = fragmentSearch.trim();
+
+    if (!query) {
+      setNotice('Введите номер или @username для поиска.');
       return;
     }
+
     setBusy(true);
+    setFragmentResult(null);
+    setNotice('');
+
     try {
-      const result = await apiGet<AnyRecord>('/fragment/info', { q: fragmentSearch.trim() });
+      const result = await apiGet<AnyRecord>('/fragment/info', { q: query });
       setFragmentResult(result);
+      setNotice('Информация получена из внутренней базы NeoGram.');
     } catch (error) {
-      setFragmentResult(null);
-      notify(errorText(error));
+      setNotice(getErrorMessage(error));
     } finally {
       setBusy(false);
     }
   };
 
-  const buyListing = async (listingId: number) => {
-    setBusy(true);
-    try {
-      const result = await apiPost<AnyRecord>('/market/buy', { listing_id: listingId });
-      notify(`Покупка завершена. Комиссия: ${formatGram(result.fee)} GRAM.`);
-      await refresh();
-    } catch (error) {
-      notify(errorText(error));
-    } finally {
-      setBusy(false);
+  const attachIssuedNumber = async () => {
+    const phone = numberToAttach.replace(/[^\d+]/g, '');
+
+    if (!phone) {
+      setNotice('Введите номер, который уже выдан вашему ID Создателем.');
+      return;
     }
+
+    await run(
+      () => apiPost('/assets/use-phone', { phone }),
+      'Запрос на привязку номера выполнен.',
+    );
   };
 
   const sellPhone = async () => {
-    const phone = listingAsset.replace(/\s/g, '');
     const price = Number(listingPrice);
-    if (!phone || !Number.isFinite(price) || price <= 0) {
-      notify('Выберите номер и укажите цену больше нуля.');
+
+    if (!listingAsset) {
+      setNotice('Выберите номер для выставления.');
       return;
     }
-    setBusy(true);
-    try {
-      await apiPost('/market/sell', { asset_type: 'phone', asset_key: phone, price });
-      notify('Номер выставлен на внутреннюю биржу.');
-      await refresh();
-    } catch (error) {
-      notify(errorText(error));
-    } finally {
-      setBusy(false);
+
+    if (!Number.isFinite(price) || price <= 0) {
+      setNotice('Цена должна быть больше нуля.');
+      return;
     }
+
+    await run(
+      () => apiPost('/market/sell', {
+        asset_type: 'phone',
+        asset_key: listingAsset,
+        price,
+      }),
+      'Номер выставлен на внутреннюю биржу.',
+    );
+  };
+
+  const sellGift = async (gift: AnyRecord) => {
+    const giftId = Number(gift.gift_id);
+
+    if (!giftId) {
+      setNotice('Не удалось определить ID подарка.');
+      return;
+    }
+
+    const input = typeof window !== 'undefined'
+      ? window.prompt('Цена продажи в GRAM:', '100')
+      : null;
+
+    if (input === null) return;
+
+    const price = Number(input);
+
+    if (!Number.isFinite(price) || price <= 0) {
+      setNotice('Введите корректную цену.');
+      return;
+    }
+
+    await run(
+      () => apiPost('/market/sell', {
+        asset_type: 'gift',
+        asset_key: String(giftId),
+        price,
+      }),
+      'Подарок выставлен на биржу.',
+    );
+  };
+
+  const buyListing = async (listingId: number) => {
+    if (!listingId) return;
+
+    await run(
+      () => apiPost('/market/buy', { listing_id: listingId }),
+      'Покупка лота завершена. Комиссия биржи — 10%.',
+    );
   };
 
   const buyFrame = async (frame: AnyRecord) => {
-    setBusy(true);
-    try {
-      await apiPost('/shop/buy', {
+    await run(
+      () => apiPost('/shop/buy', {
         kind: 'frame',
         frame: frame.id,
         frame_color: frame.color,
         price: frame.price,
-      });
-      notify(`Рамка «${frame.name}» приобретена.`);
-      await refresh();
-    } catch (error) {
-      notify(errorText(error));
-    } finally {
-      setBusy(false);
-    }
+      }),
+      `Рамка ${frame.name} приобретена за Stars.`,
+    );
   };
 
   const buyNickStyle = async (style: AnyRecord) => {
-    setBusy(true);
-    try {
-      await apiPost('/shop/buy', {
+    await run(
+      () => apiPost('/shop/buy', {
         kind: 'style',
         style: style.id,
         target: 'player',
         price: style.price,
-      });
-      notify(`Стиль ника «${style.name}» приобретён.`);
-      await refresh();
-    } catch (error) {
-      notify(errorText(error));
-    } finally {
-      setBusy(false);
-    }
+      }),
+      `Стиль ника ${style.name} приобретён за Stars.`,
+    );
   };
 
   const upgradeGift = async (gift: AnyRecord) => {
-    if (rouletteBusy || !gift.gift_id) return;
+    const giftId = Number(gift.gift_id);
+
+    if (!giftId) {
+      setNotice('Не удалось определить ID подарка.');
+      return;
+    }
+
+    if (stars < 300) {
+      setNotice('Для улучшения необходимо 300 Stars.');
+      return;
+    }
+
     setRouletteBusy(true);
     setRouletteResult(null);
+    setNotice('');
+
     try {
-      const result = await apiPost<AnyRecord>('/gifts/upgrade', { gift_id: gift.gift_id });
-      setRouletteResult({
-        ...gift,
-        model: result.model,
-        rarity: result.rarity_percent,
-        bg: result.bg || gift.bg,
-        pattern: result.pattern || gift.pattern,
-      });
-      notify(`Улучшение завершено: ${result.model || 'новая форма'}, редкость ${result.rarity_percent || 0}%.`);
-      await refresh();
+      await apiPost('/gifts/upgrade', { gift_id: giftId });
+
+      const [updatedGifts, updatedWallet] = await Promise.all([
+        apiGet<AnyRecord>('/gifts'),
+        apiGet<AnyRecord>('/wallet'),
+      ]);
+
+      setGifts(updatedGifts || { catalog: [], owned: [] });
+      setWallet(updatedWallet || {});
+
+      const updatedOwned = Array.isArray(updatedGifts?.owned)
+        ? updatedGifts.owned as AnyRecord[]
+        : [];
+
+      const result = updatedOwned.find(
+        (item) => Number(item.gift_id) === giftId,
+      );
+
+      if (result) {
+        setRouletteResult(result);
+        setSelectedGift(String(giftId));
+      }
+
+      setNotice('Worker завершил улучшение. Результат загружен из инвентаря.');
     } catch (error) {
-      notify(errorText(error));
+      setNotice(getErrorMessage(error));
     } finally {
       setRouletteBusy(false);
     }
   };
 
-  const sellGift = async (gift: AnyRecord) => {
-    if (!gift.gift_id) return;
-    const price = Number(window.prompt('Цена продажи в GRAM:', '100'));
-    if (!Number.isFinite(price) || price <= 0) return;
-    setBusy(true);
-    try {
-      await apiPost('/market/sell', {
-        asset_type: 'gift',
-        asset_key: String(gift.gift_id),
-        price,
-      });
-      notify('Подарок выставлен на биржу.');
-      await refresh();
-    } catch (error) {
-      notify(errorText(error));
-    } finally {
-      setBusy(false);
+  const chooseAvatarFile = (file?: File) => {
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      setNotice('Выберите файл изображения.');
+      return;
     }
+
+    if (file.size > 5 * 1024 * 1024) {
+      setNotice('Размер изображения не должен превышать 5 МБ.');
+      return;
+    }
+
+    const reader = new FileReader();
+
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        setAvatarPreview(reader.result);
+        setNotice('Аватар показан в локальном предпросмотре. Текущий Worker не умеет сохранять загруженный файл.');
+      }
+    };
+
+    reader.onerror = () => setNotice('Не удалось прочитать изображение.');
+    reader.readAsDataURL(file);
   };
 
-  const visibleListings = useMemo(() => listings.filter((item) => item.status === 'open'), [listings]);
+  const renderProfilePreview = () => {
+    const displayName = user?.username
+      ? `@${user.username}`
+      : `Player #${user?.id || ''}`;
 
-  const styles = `
-    .ngps{--a:var(--color-primary,#299cff);--bg:var(--color-background,#080d19);--card:var(--color-background-secondary,#111a2b);--txt:var(--color-text,#f4f7ff);--muted:var(--color-text-secondary,#93a1b8);--line:var(--color-borders,rgba(145,170,210,.17));color:var(--txt);width:100%;min-width:0;padding:12px;box-sizing:border-box;font-family:inherit}
-    .ngps *{box-sizing:border-box}
-    .ngps button,.ngps input,.ngps select{font:inherit}
-    .ngps button{cursor:pointer}
-    .ngps button:disabled{opacity:.48;cursor:default}
-    .ngps-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}
-    .ngps-title{font-size:23px;font-weight:850;letter-spacing:-.6px}
-    .ngps-sub{font-size:12px;color:var(--muted);margin-top:3px}
-    .ngps-refresh{border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--txt);padding:9px 12px}
-    .ngps-tabs{display:flex;gap:7px;overflow-x:auto;padding:2px 0 12px;margin-bottom:8px}
-    .ngps-tab{flex:0 0 auto;border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--muted);padding:9px 13px}
-    .ngps-tab.active{background:color-mix(in srgb,var(--a) 18%,var(--card));border-color:var(--a);color:var(--txt)}
-    .ngps-panel{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:15px;margin-bottom:12px;min-width:0}
-    .ngps-panel h3{font-size:16px;margin:0 0 12px;font-weight:800}
-    .ngps-muted{color:var(--muted);font-size:12px;line-height:1.5}
-    .ngps-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px}
-    .ngps-field{display:flex;flex-direction:column;gap:6px;margin:10px 0}
-    .ngps-field label{font-size:12px;color:var(--muted)}
-    .ngps-field input,.ngps-field select{width:100%;min-width:0;border:1px solid var(--line);border-radius:11px;background:var(--bg);color:var(--txt);padding:12px;font-size:16px;outline:none}
-    .ngps-btn{border:0;border-radius:12px;background:var(--a);color:#fff;padding:11px 14px;font-weight:750}
-    .ngps-btn.secondary{background:rgba(125,150,185,.14);border:1px solid var(--line);color:var(--txt)}
-    .ngps-btn.danger{background:#a83c52}
-    .ngps-row{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
-    .ngps-between{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
-    .ngps-balance{font-size:28px;font-weight:900;letter-spacing:-.7px}
-    .ngps-preview{overflow:hidden;border:1px solid var(--line);border-radius:18px;background:var(--bg)}
-    .ngps-banner{height:118px;background:linear-gradient(120deg,#163d73,#4e2c80 55%,#111a2b);background-size:cover;background-position:center}
-    .ngps-preview-body{padding:0 15px 15px}
-    .ngps-avatar{width:66px;height:66px;border-radius:22px;border:4px solid var(--card);margin-top:-32px;background:linear-gradient(135deg,#299cff,#a64bff);display:flex;align-items:center;justify-content:center;font-size:27px;font-weight:900}
-    .ngps-name{font-size:19px;font-weight:850;margin-top:8px}
-    .ngps-tag{display:inline-block;margin-left:7px;border-radius:7px;background:linear-gradient(90deg,#ffbd55,#ff6d9c);color:#24152a;padding:3px 6px;font-size:10px;font-weight:900}
-    .ngps-badges{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
-    .ngps-badge{border:1px solid var(--line);border-radius:8px;padding:4px 7px;font-size:10px;color:var(--muted)}
-    .ngps-card{background:var(--bg);border:1px solid var(--line);border-radius:14px;padding:12px;min-width:0}
-    .ngps-icon{font-size:26px;margin-bottom:8px}
-    .ngps-price{font-weight:850;margin:8px 0}
-    .ngps-pill{display:inline-block;border-radius:99px;background:rgba(41,156,255,.13);color:var(--a);padding:4px 8px;font-size:10px}
-    .ngps-empty{padding:18px;text-align:center;color:var(--muted);font-size:13px}
-    .ngps-faq{border-top:1px solid var(--line);padding:12px 0}
-    .ngps-faq button{width:100%;display:flex;justify-content:space-between;gap:10px;border:0;background:none;color:var(--txt);text-align:left;font-weight:750;padding:2px 0}
-    .ngps-faq p{color:var(--muted);font-size:13px;line-height:1.55;margin:10px 0 0}
-    .ngps-reels{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:12px 0}
-    .ngps-reel{min-height:88px;border-radius:14px;border:1px solid var(--line);background:linear-gradient(145deg,#07090f,#202b3d);display:flex;align-items:center;justify-content:center;text-align:center;font-size:12px;font-weight:800;padding:8px;animation:ngps-pulse 1.1s ease-in-out infinite alternate}
-    .ngps-reel:nth-child(2){animation-delay:.15s}.ngps-reel:nth-child(3){animation-delay:.3s}
-    @keyframes ngps-pulse{from{transform:translateY(0);filter:brightness(.85)}to{transform:translateY(-3px);filter:brightness(1.35)}}
-    .ngps-notice{position:sticky;bottom:10px;margin-top:10px;padding:12px 14px;border-radius:12px;background:#172b43;border:1px solid rgba(75,160,255,.35);box-shadow:0 8px 28px #0005;font-size:13px}
-    .ngps-table{width:100%;border-collapse:collapse;font-size:12px}
-    .ngps-table td{padding:9px 5px;border-bottom:1px solid var(--line);vertical-align:middle}
-    @media(min-width:650px){.ngps-profile-grid{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,.9fr);gap:12px}.ngps-profile-grid>.ngps-panel{margin-bottom:0}}
-  `;
+    return (
+      <div className={`ngps-preview ngps-preview-${layout}`}>
+        <div
+          className="ngps-banner"
+          style={profile.banner_url
+            ? { backgroundImage: `url("${String(profile.banner_url)}")` }
+            : undefined}
+        />
 
-  const platformLabels: Record<Layout, string> = {
-    neogram: 'NeoGram',
-    discord: 'Discord',
-    twitter: 'Twitter / X',
-    steam: 'Steam',
+        <div className="ngps-preview-body">
+          <div className="ngps-avatar">
+            {avatarPreview
+              ? <img src={avatarPreview} alt="Предпросмотр аватара" />
+              : String(user?.username || 'N').charAt(0).toUpperCase()}
+          </div>
+
+          <div className="ngps-name">
+            {displayName}
+            {isCreator && <span className="ngps-dev-tag">#DEV</span>}
+          </div>
+
+          <div className="ngps-muted">
+            {layout.toUpperCase()} · {prettyPhone(user?.phone)}
+          </div>
+
+          <div className="ngps-badges">
+            {isCreator && <span className="ngps-badge creator">✦ Создатель</span>}
+            {Number(user?.is_creator_badge) === 1 && <span className="ngps-badge">✓ Verified</span>}
+            {Number(user?.hold_badge) === 1 && <span className="ngps-badge">Hold</span>}
+            {Number(user?.major_badge) === 1 && <span className="ngps-badge">Major</span>}
+          </div>
+
+          <div className="ngps-grid ngps-preview-stats">
+            <div className="ngps-card">
+              <div className="ngps-balance">{formatNumber(gram)}</div>
+              <div className="ngps-muted">GRAM</div>
+            </div>
+            <div className="ngps-card">
+              <div className="ngps-balance">{phones.length}</div>
+              <div className="ngps-muted">Номеров</div>
+            </div>
+          </div>
+
+          <div className="ngps-social-preview">
+            <div>Discord: {socialLinks.discord || '—'}</div>
+            <div>Twitter: {socialLinks.twitter || '—'}</div>
+            <div>Steam: {socialLinks.steam || '—'}</div>
+          </div>
+        </div>
+      </div>
+    );
   };
+
+  if (loading) {
+    return (
+      <section className="ngps-root">
+        <style>{styles}</style>
+        <div className="ngps-loading">Подключение к NeoGram Worker…</div>
+      </section>
+    );
+  }
+
+  if (!user) {
+    return (
+      <section className="ngps-root">
+        <style>{styles}</style>
+        <div className="ngps-panel">
+          <h3>NeoGram</h3>
+          <p className="ngps-muted">Не удалось загрузить профиль. Проверьте авторизацию и подключение к Worker.</p>
+          <button className="ngps-btn" type="button" onClick={() => {
+            setLoading(true);
+            void refresh()
+              .catch((error) => setNotice(getErrorMessage(error)))
+              .finally(() => setLoading(false));
+          }}>
+            Повторить загрузку
+          </button>
+          {notice && <div className="ngps-notice">{notice}</div>}
+        </div>
+      </section>
+    );
+  }
 
   return (
-    <section className="ngps">
+    <section className="ngps-root">
       <style>{styles}</style>
 
-      <div className="ngps-head">
+      <header className="ngps-header">
         <div>
-          <div className="ngps-title">Профиль и магазин</div>
-          <div className="ngps-sub">NeoGram · GRAM · внутренняя биржа</div>
+          <div className="ngps-brand">NEOGRAM</div>
+          <div className="ngps-header-sub">PROFILE · WALLET · MARKET</div>
         </div>
-        <button className="ngps-refresh" type="button" onClick={() => void refresh()}>
-          ↻ Обновить
-        </button>
-      </div>
+        <div className="ngps-header-balance">
+          <strong>{formatNumber(gram)}</strong>
+          <span>GRAM</span>
+        </div>
+      </header>
 
-      <div className="ngps-tabs">
+      <nav className="ngps-tabs">
         {([
           ['profile', 'Профиль'],
           ['wallet', 'Кошелёк'],
           ['shop', 'Магазин'],
           ['gifts', 'Подарки'],
           ['faq', 'FAQ'],
-        ] as Array<[Tab, string]>).map(([id, label]) => (
+        ] as [Tab, string][]).map(([id, label]) => (
           <button
             key={id}
+            className={tab === id ? 'active' : ''}
             type="button"
-            className={`ngps-tab ${tab === id ? 'active' : ''}`}
             onClick={() => setTab(id)}
           >
             {label}
           </button>
         ))}
-      </div>
+      </nav>
 
-      {loading && <div className="ngps-panel ngps-empty">Загружаем данные с сервера…</div>}
-
-      {!loading && !user && (
-        <div className="ngps-panel ngps-empty">Не удалось загрузить профиль. Проверьте авторизацию и нажмите «Обновить».</div>
-      )}
-
-      {!loading && user && tab === 'profile' && (
+      {tab === 'profile' && (
         <>
-          <div className="ngps-profile-grid">
+          <div className="ngps-profile-layout">
             <div className="ngps-panel">
-              <h3>Предпросмотр профиля</h3>
-              <div className="ngps-row" style={{ marginBottom: 12 }}>
-                {(Object.keys(platformLabels) as Layout[]).map((item) => (
+              <div className="ngps-panel-heading">
+                <div>
+                  <h3>Предпросмотр профиля</h3>
+                  <p className="ngps-muted">NeoGram / Discord / Twitter / Steam</p>
+                </div>
+                <button className="ngps-btn secondary small" type="button" disabled={busy} onClick={() => void refresh()}>
+                  ↻
+                </button>
+              </div>
+
+              <div className="ngps-layout-picker">
+                {([
+                  ['neogram', 'NeoGram'],
+                  ['discord', 'Discord'],
+                  ['twitter', 'Twitter'],
+                  ['steam', 'Steam'],
+                ] as [Layout, string][]).map(([id, label]) => (
                   <button
-                    key={item}
+                    key={id}
                     type="button"
-                    className={`ngps-tab ${layout === item ? 'active' : ''}`}
-                    onClick={() => setLayout(item)}
+                    className={layout === id ? 'active' : ''}
+                    onClick={() => void saveLayout(id)}
                   >
-                    {platformLabels[item]}
+                    {label}
                   </button>
                 ))}
               </div>
 
-              <div className={`ngps-preview ngps-preview-${layout}`}>
-                <div
-                  className="ngps-banner"
-                  style={userProfile.banner_url ? { backgroundImage: `url("${String(userProfile.banner_url)}")` } : undefined}
-                />
-                <div className="ngps-preview-body">
-                  <div className="ngps-avatar">{String(user.username || 'N').charAt(0).toUpperCase()}</div>
-                  <div className="ngps-name">
-                    {user.username ? `@${user.username}` : `Player #${user.id}`}
-                    {isCreator && <span className="ngps-tag">#DEV</span>}
-                  </div>
-                  <div className="ngps-muted">{platformLabels[layout]} · {prettyPhone(user.phone)}</div>
-                  <div className="ngps-badges">
-                    {isCreator && <span className="ngps-badge">✦ Создатель</span>}
-                    {Number(user.is_creator_badge) === 1 && <span className="ngps-badge">✓ Verified</span>}
-                    {Number(user.hold_badge) === 1 && <span className="ngps-badge">Hold</span>}
-                    {Number(user.major_badge) === 1 && <span className="ngps-badge">Major</span>}
-                  </div>
-                  <div className="ngps-grid" style={{ marginTop: 14 }}>
-                    <div className="ngps-card"><div className="ngps-balance">{formatGram(gram)}</div><div className="ngps-muted">GRAM</div></div>
-                    <div className="ngps-card"><div className="ngps-balance">{phones.length}</div><div className="ngps-muted">Номеров</div></div>
-                  </div>
-                  <div className="ngps-muted" style={{ marginTop: 12 }}>
-                    Discord: {socialLinks.discord || '—'}<br />
-                    Twitter: {socialLinks.twitter || '—'}<br />
-                    Steam: {socialLinks.steam || '—'}
-                  </div>
-                </div>
-              </div>
+              {renderProfilePreview()}
             </div>
 
             <div className="ngps-panel">
-              <h3>Настройки профиля</h3>
+              <h3>Баннер профиля</h3>
               <div className="ngps-field">
-                <label>Баннер — URL изображения</label>
-                <input value={bannerUrl} onChange={(event) => setBannerUrl(event.target.value)} placeholder="https://…" />
+                <label>Публичная ссылка на изображение</label>
+                <input
+                  value={bannerUrl}
+                  onChange={(event) => setBannerUrl(event.target.value)}
+                  placeholder="https://example.com/banner.jpg"
+                />
               </div>
               <button className="ngps-btn" type="button" disabled={busy} onClick={() => void saveBanner()}>
-                Сохранить баннер
+                Сохранить баннер на сервере
               </button>
-              <p className="ngps-muted">Worker сохраняет banner_url. Загрузка файла с устройства и avatar_url пока не реализованы на сервере.</p>
 
+              <div className="ngps-divider" />
+
+              <h3>Аватар профиля</h3>
+              <label className="ngps-file-button">
+                <span>Выбрать изображение</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(event) => chooseAvatarFile(event.target.files?.[0])}
+                />
+              </label>
+              <p className="ngps-muted">
+                Файл используется только для предпросмотра на этом экране. В Worker отсутствует маршрут загрузки аватара, поэтому после перезагрузки он не сохранится.
+              </p>
+
+              <div className="ngps-divider" />
+
+              <h3>Социальные профили</h3>
               <div className="ngps-field">
                 <label>Discord</label>
                 <input value={discord} onChange={(event) => setDiscord(event.target.value)} placeholder="username или ссылка" />
@@ -553,83 +697,162 @@ export default function NeoGramProfileShop() {
           </div>
 
           <div className="ngps-panel">
-            <h3>Никнейм и тег</h3>
+            <h3>Username и специальные теги</h3>
             <div className="ngps-field">
-              <label>Username (3–10 символов)</label>
-              <input value={username} onChange={(event) => setUsername(event.target.value)} placeholder="username" />
+              <label>Username · 3–10 символов</label>
+              <input
+                value={username}
+                onChange={(event) => setUsername(event.target.value)}
+                placeholder="username"
+                maxLength={10}
+              />
             </div>
-            <div className="ngps-row">
-              <button className="ngps-btn" type="button" disabled={busy} onClick={() => void claimUsername()}>
-                Купить / занять ник
-              </button>
-              {usernamePrice !== null && <span className="ngps-pill">Цена: {formatGram(usernamePrice)} GRAM</span>}
-            </div>
-            <p className="ngps-muted">#DEV зарезервирован сервером для Создателя. Цвета номеров +777 и +666 не продаются в магазине ников.</p>
+            <button className="ngps-btn" type="button" disabled={busy} onClick={() => void claimUsername()}>
+              Зарегистрировать username
+            </button>
+            <p className="ngps-muted">
+              Worker рассчитывает цену username и проверяет занятость. В текущем Worker маршрут регистрации не списывает GRAM автоматически.
+            </p>
+
             {isCreator && (
-              <div className="ngps-card" style={{ marginTop: 12 }}>
-                <strong>#DEV · Создатель</strong>
-                <p className="ngps-muted">Личный мастер-номер +666 6 666: 666 666 666 666 GRAM. Ник @dev: 1 000 000 000 GRAM. Покупка мастер-номера через этот экран отключена: он закреплён за Создателем сервером.</p>
+              <div className="ngps-creator-card">
+                <div className="ngps-creator-mark">✦</div>
+                <div>
+                  <strong>#DEV · Создатель</strong>
+                  <p>Мастер-номер: +666 6 666</p>
+                  <p>Цена мастер-номера: 666 666 666 666 GRAM</p>
+                  <p>@dev: 1 000 000 000 GRAM</p>
+                  <button
+                    className="ngps-btn secondary"
+                    type="button"
+                    disabled={busy || String(user.username || '').toLowerCase() === 'dev'}
+                    onClick={() => void claimUsername('dev')}
+                  >
+                    {String(user.username || '').toLowerCase() === 'dev' ? '@dev уже установлен' : 'Зарегистрировать @dev'}
+                  </button>
+                  <p className="ngps-muted">
+                    Worker разрешает username dev только Создателю. Отображение #DEV определяется серверным is_creator. Цены показаны по заданию проекта, но текущий маршрут не выполняет списание этих сумм.
+                  </p>
+                </div>
               </div>
             )}
           </div>
 
           <div className="ngps-panel">
-            <h3>Редкие номера в вашем кошельке</h3>
-            <p className="ngps-muted">Показываются номера, выданные вашему аккаунту. Привязка выполняется сервером.</p>
-            {phones.length === 0 && <div className="ngps-empty">Выданных дополнительных номеров пока нет.</div>}
+            <div className="ngps-panel-heading">
+              <div>
+                <h3>Бейджи профиля</h3>
+                <p className="ngps-muted">Статусы, полученные из ответа Worker.</p>
+              </div>
+            </div>
+            <div className="ngps-badges ngps-badges-large">
+              {isCreator && <span className="ngps-badge creator">✦ Создатель</span>}
+              {Number(user.is_creator_badge) === 1 && <span className="ngps-badge">✓ Hold / Verified</span>}
+              {Number(user.hold_badge) === 1 && <span className="ngps-badge hold">Hold</span>}
+              {Number(user.major_badge) === 1 && <span className="ngps-badge major">Major</span>}
+              {!isCreator && !Number(user.is_creator_badge) && !Number(user.hold_badge) && !Number(user.major_badge) && (
+                <span className="ngps-muted">Пока нет специальных бейджей.</span>
+              )}
+            </div>
+            <p className="ngps-muted">
+              Бейджи отображаются по серверным полям. Самостоятельно назначить их через профиль нельзя.
+            </p>
+          </div>
+
+          <div className="ngps-panel">
+            <h3>Кошелёк номеров +777 / +666</h3>
+            <p className="ngps-muted">
+              Номера должны быть заранее выпущены Создателем с указанием вашего ID или username. В этом случае Worker добавляет их в профиль при выдаче.
+            </p>
+
+            {phones.length === 0 && (
+              <div className="ngps-empty">Дополнительных выданных номеров пока нет.</div>
+            )}
+
             {phones.map((item, index) => {
               const phone = String(item.phone || '');
-              const series = phone.startsWith('+777') ? '+777' : phone.startsWith('+666') ? '+666' : '+888';
+              const series = phone.startsWith('+777')
+                ? '+777'
+                : phone.startsWith('+666')
+                  ? '+666'
+                  : '+888';
+
               return (
-                <div className="ngps-between" key={`${phone}-${index}`} style={{ padding: '9px 0', borderBottom: '1px solid var(--line)' }}>
+                <div className="ngps-between ngps-list-row" key={`${phone}-${index}`}>
                   <div>
                     <strong>{prettyPhone(phone)}</strong>
-                    <div className="ngps-muted">{series} · {Number(item.primary_phone) === 1 ? 'Основной номер' : 'Выданный номер'}</div>
+                    <div className="ngps-muted">
+                      {series} · {Number(item.primary_phone) === 1 ? 'Основной номер' : 'Дополнительный номер'}
+                    </div>
                   </div>
-                  <span className="ngps-pill">{Number(item.price || 0) ? `${formatGram(item.price)} GRAM` : 'Владение'}</span>
+                  <span className="ngps-pill">
+                    {Number(item.price || 0) > 0 ? formatGram(item.price) : 'Привязан'}
+                  </span>
                 </div>
               );
             })}
+
+            <div className="ngps-divider" />
+            <h4>Привязать уже выданный номер</h4>
             <div className="ngps-field">
-              <label>Привязать выданный номер</label>
-              <select value={numberToBind} onChange={(event) => setNumberToBind(event.target.value)}>
-                <option value="">Выберите номер</option>
-                {phones.filter((item) => Number(item.primary_phone) !== 1).map((item, index) => (
-                  <option key={`${item.phone}-${index}`} value={String(item.phone)}>{prettyPhone(String(item.phone))}</option>
-                ))}
-              </select>
+              <label>Точный номер</label>
+              <input
+                value={numberToAttach}
+                onChange={(event) => setNumberToAttach(event.target.value)}
+                placeholder="+777 1234 или +666 1234"
+              />
             </div>
-            <button className="ngps-btn" type="button" disabled={busy || !numberToBind} onClick={() => void bindPhone(numberToBind)}>
-              Привязать к профилю
+            <button className="ngps-btn secondary" type="button" disabled={busy || !numberToAttach.trim()} onClick={() => void attachIssuedNumber()}>
+              Отправить запрос на привязку
             </button>
-            <p className="ngps-muted">Создание нового аккаунта через +777/+666 не поддерживается текущим Worker; доступна привязка к текущему профилю.</p>
+            <p className="ngps-muted">
+              Worker проверит, что номер уже выдан именно вашему аккаунту. Создать новый аккаунт через +777/+666 нельзя. Если номер уже отображается выше, повторно привязывать его не нужно.
+            </p>
           </div>
         </>
       )}
 
-      {!loading && user && tab === 'wallet' && (
+      {tab === 'wallet' && (
         <>
-          <div className="ngps-panel">
-            <div className="ngps-muted">Баланс GRAM</div>
-            <div className="ngps-balance">{formatGram(gram)} GRAM</div>
-            <div className="ngps-muted">Stars: {formatGram(wallet.stars ?? user.stars ?? 0)}</div>
+          <div className="ngps-wallet-grid">
+            <div className="ngps-wallet-card">
+              <span>Баланс GRAM</span>
+              <strong>{formatNumber(gram)}</strong>
+              <small>Внутренняя валюта</small>
+            </div>
+            <div className="ngps-wallet-card stars">
+              <span>Баланс Stars</span>
+              <strong>{formatNumber(stars)}</strong>
+              <small>Покупки и улучшения</small>
+            </div>
           </div>
 
           <div className="ngps-panel">
-            <h3>Fragment · внутренняя биржа</h3>
-            <p className="ngps-muted">Биржа NeoGram работает внутри Worker. Комиссия при продаже составляет 10%; внешний Fragment API не подключён.</p>
+            <h3>Fragment · внутренняя биржа NeoGram</h3>
+            <p className="ngps-muted">
+              Биржа работает через Worker и D1. Комиссия с продажи — 10%. Внешний Fragment API не используется.
+            </p>
+
             <div className="ngps-field">
-              <label>Поиск номера или @username</label>
-              <input value={fragmentSearch} onChange={(event) => setFragmentSearch(event.target.value)} placeholder="+777… или @username" />
+              <label>Поиск номера или username</label>
+              <input
+                value={fragmentSearch}
+                onChange={(event) => setFragmentSearch(event.target.value)}
+                placeholder="+777… или @username"
+              />
             </div>
             <button className="ngps-btn secondary" type="button" disabled={busy} onClick={() => void searchFragment()}>
               Найти актив
             </button>
+
             {fragmentResult && (
-              <div className="ngps-card" style={{ marginTop: 12 }}>
-                <strong>{fragmentResult.owner || fragmentResult.username || fragmentResult.phone}</strong>
-                <div className="ngps-muted">{fragmentResult.phone ? prettyPhone(String(fragmentResult.phone)) : 'Username'}</div>
-                <div className="ngps-price">{formatGram(fragmentResult.value_gram)} GRAM</div>
+              <div className="ngps-card ngps-search-result">
+                <strong>{fragmentResult.owner || fragmentResult.username || fragmentResult.phone || 'Актив'}</strong>
+                <div className="ngps-muted">
+                  {fragmentResult.phone ? prettyPhone(fragmentResult.phone) : fragmentResult.username || 'Профиль'}
+                </div>
+                <div className="ngps-price">{formatGram(fragmentResult.value_gram)}</div>
+                <div className="ngps-muted">Источник: {fragmentResult.marketplace || 'NeoGram Worker'}</div>
               </div>
             )}
           </div>
@@ -637,19 +860,31 @@ export default function NeoGramProfileShop() {
           <div className="ngps-panel">
             <h3>Выставить номер на биржу</h3>
             <div className="ngps-field">
-              <label>Номер из вашего кошелька</label>
+              <label>Номер из вашего профиля</label>
               <select value={listingAsset} onChange={(event) => setListingAsset(event.target.value)}>
                 <option value="">Выберите номер</option>
                 {phones.map((item, index) => (
-                  <option key={`${item.phone}-${index}`} value={String(item.phone)}>{prettyPhone(String(item.phone))}</option>
+                  <option key={`${item.phone}-${index}`} value={String(item.phone)}>
+                    {prettyPhone(item.phone)}
+                  </option>
                 ))}
               </select>
             </div>
+
             <div className="ngps-field">
               <label>Цена в GRAM</label>
               <input type="number" min="1" value={listingPrice} onChange={(event) => setListingPrice(event.target.value)} />
             </div>
-            <div className="ngps-muted">Комиссия: {formatGram(Number(listingPrice || 0) * FEE)} GRAM · вы получите {formatGram(Number(listingPrice || 0) * (1 - FEE))} GRAM.</div>
+
+            <div className="ngps-fee-line">
+              <span>Комиссия 10%</span>
+              <strong>{formatGram(Number(listingPrice || 0) * COMMISSION)}</strong>
+            </div>
+            <div className="ngps-fee-line">
+              <span>Вы получите 90%</span>
+              <strong>{formatGram(Number(listingPrice || 0) * (1 - COMMISSION))}</strong>
+            </div>
+
             <button className="ngps-btn" type="button" disabled={busy} onClick={() => void sellPhone()}>
               Выставить номер
             </button>
@@ -658,14 +893,27 @@ export default function NeoGramProfileShop() {
           <div className="ngps-panel">
             <h3>Открытые лоты</h3>
             {visibleListings.length === 0 && <div className="ngps-empty">Открытых лотов нет.</div>}
+
             {visibleListings.map((item) => (
-              <div className="ngps-between" key={item.id} style={{ padding: '10px 0', borderBottom: '1px solid var(--line)' }}>
-                <div>
-                  <strong>{item.asset_type === 'phone' ? prettyPhone(String(item.asset_key || '')) : `${item.asset_type} #${item.asset_id}`}</strong>
-                  <div className="ngps-muted">Продавец: {item.seller_username || `ID ${item.seller_id}`}</div>
-                  <div className="ngps-price">{formatGram(item.price)} GRAM</div>
+              <div className="ngps-market-row" key={item.id}>
+                <div className="ngps-market-info">
+                  <strong>
+                    {item.asset_type === 'phone'
+                      ? prettyPhone(item.asset_key)
+                      : item.asset_type === 'gift'
+                        ? `Подарок #${item.asset_id || item.asset_key}`
+                        : `@${item.asset_key}`}
+                  </strong>
+                  <span>Продавец: {item.seller_username || `ID ${item.seller_id}`}</span>
+                  <b>{formatGram(item.price)}</b>
+                  <small>Комиссия 10% · продавец получит {formatGram(Number(item.price) * 0.9)}</small>
                 </div>
-                <button className="ngps-btn" type="button" disabled={busy || Number(item.seller_id) === user.id} onClick={() => void buyListing(Number(item.id))}>
+                <button
+                  className="ngps-btn"
+                  type="button"
+                  disabled={busy || Number(item.seller_id) === Number(user.id)}
+                  onClick={() => void buyListing(Number(item.id))}
+                >
                   Купить
                 </button>
               </div>
@@ -674,88 +922,111 @@ export default function NeoGramProfileShop() {
 
           <div className="ngps-panel">
             <h3>История кошелька</h3>
-            {(Array.isArray(wallet.transactions) ? wallet.transactions : []).length === 0 && <div className="ngps-empty">Операций пока нет.</div>}
+            {(!Array.isArray(wallet.transactions) || wallet.transactions.length === 0) && (
+              <div className="ngps-empty">Операций пока нет.</div>
+            )}
             {(Array.isArray(wallet.transactions) ? wallet.transactions : []).map((item: AnyRecord) => (
-              <div className="ngps-between" key={item.id} style={{ padding: '8px 0', borderBottom: '1px solid var(--line)' }}>
+              <div className="ngps-between ngps-list-row" key={item.id}>
                 <div>
-                  <strong>{item.kind}</strong>
-                  <div className="ngps-muted">{item.created_at}</div>
+                  <strong>{item.kind || 'Операция'}</strong>
+                  <div className="ngps-muted">{item.created_at || ''}</div>
                 </div>
-                <span>{formatGram(item.amount)} {item.currency}</span>
+                <span className="ngps-pill">
+                  {formatNumber(item.amount)} {String(item.currency || '').toUpperCase()}
+                </span>
               </div>
             ))}
           </div>
         </>
       )}
 
-      {!loading && user && tab === 'shop' && (
+      {tab === 'shop' && (
         <>
           <div className="ngps-panel">
             <h3>Магазин рамок</h3>
+            <p className="ngps-muted">Стоимость списывается в Stars серверным маршрутом /shop/buy.</p>
             <div className="ngps-grid">
               {FRAMES.map((item) => (
-                <div className="ngps-card" key={item.id}>
-                  <div className="ngps-icon">{item.icon}</div>
+                <div className="ngps-card ngps-shop-card" key={item.id}>
+                  <div className="ngps-frame-sample" style={{ borderColor: item.color, boxShadow: `0 0 18px ${item.color}55` }}>
+                    {item.icon}
+                  </div>
                   <strong>{item.name}</strong>
-                  <div className="ngps-price">{formatGram(item.price)} GRAM</div>
+                  <div className="ngps-price">{formatStars(item.price)}</div>
                   <button className="ngps-btn" type="button" disabled={busy} onClick={() => void buyFrame(item)}>
                     Купить
                   </button>
                 </div>
               ))}
             </div>
-            <p className="ngps-muted" style={{ marginTop: 10 }}>Покупка рамки обрабатывается через POST /shop/buy (kind: frame).</p>
           </div>
 
           <div className="ngps-panel">
-            <h3>Магазин переливающихся ников</h3>
+            <h3>Магазин стилей ника</h3>
+            <p className="ngps-muted">Покупка стиля обрабатывается Worker. Цвета и оформление номеров +777/+666 не продаются.</p>
             <div className="ngps-grid">
               {NICK_STYLES.map((item) => (
-                <div className="ngps-card" key={item.id}>
+                <div className="ngps-card ngps-shop-card" key={item.id}>
                   <div className="ngps-icon">{item.icon}</div>
                   <strong>{item.name}</strong>
-                  <div className="ngps-price">{formatGram(item.price)} GRAM</div>
+                  <div className="ngps-price">{formatStars(item.price)}</div>
                   <button className="ngps-btn" type="button" disabled={busy} onClick={() => void buyNickStyle(item)}>
                     Купить
                   </button>
                 </div>
               ))}
             </div>
-            <p className="ngps-muted" style={{ marginTop: 10 }}>В магазине нет эксклюзивных цветов или оформления номеров +777 и +666.</p>
           </div>
 
           <div className="ngps-panel">
-            <h3>Подарки из каталога Worker</h3>
+            <h3>Каталог 3D-подарков</h3>
+            <p className="ngps-muted">Каталог загружается из Worker. Покупка из каталога пока не подключена в серверном API.</p>
+            {giftCatalog.length === 0 && <div className="ngps-empty">Каталог пока пуст.</div>}
             <div className="ngps-grid">
               {giftCatalog.map((item) => (
-                <div className="ngps-card" key={item.id}>
-                  <div className="ngps-icon">🎁</div>
+                <div className="ngps-card ngps-shop-card" key={item.id}>
+                  <div className="ngps-icon">{item.visual?.icon || '🎁'}</div>
                   <strong>{item.name}</strong>
                   <div className="ngps-muted">Остаток: {item.supply}</div>
-                  <div className="ngps-price">{formatGram(item.base_value)} GRAM · {formatGram(item.price_stars)} Stars</div>
-                  <span className="ngps-pill">Каталог сервера</span>
+                  <div className="ngps-price">{formatNumber(item.base_value)} GRAM</div>
+                  <div className="ngps-muted">{formatStars(item.price_stars)}</div>
+                  <span className="ngps-pill">3D · Black Onyx ready</span>
                 </div>
               ))}
             </div>
-            <p className="ngps-muted" style={{ marginTop: 10 }}>В предоставленном Worker есть чтение каталога и улучшение подарков, но нет пользовательского маршрута покупки подарка из каталога. Кнопка покупки не имитируется.</p>
           </div>
         </>
       )}
 
-      {!loading && user && tab === 'gifts' && (
+      {tab === 'gifts' && (
         <>
           <div className="ngps-panel">
-            <h3>Мой инвентарь подарков</h3>
-            {ownedGifts.length === 0 && <div className="ngps-empty">Подарков пока нет. Каталог доступен во вкладке «Магазин».</div>}
+            <div className="ngps-panel-heading">
+              <div>
+                <h3>Мой инвентарь подарков</h3>
+                <p className="ngps-muted">Предметы, принадлежащие вашему аккаунту.</p>
+              </div>
+              <button className="ngps-btn secondary small" type="button" disabled={busy} onClick={() => void refresh()}>
+                ↻
+              </button>
+            </div>
+
+            {ownedGifts.length === 0 && (
+              <div className="ngps-empty">В инвентаре пока нет подарков.</div>
+            )}
+
             <div className="ngps-grid">
               {ownedGifts.map((gift) => (
-                <div className="ngps-card" key={gift.gift_id}>
-                  <div className="ngps-icon">🎁</div>
+                <div className="ngps-card ngps-gift-card" key={gift.gift_id}>
+                  <div className="ngps-gift-3d">🎁</div>
                   <strong>{gift.name}</strong>
-                  <div className="ngps-muted">{gift.model || 'Classic'} · {gift.bg || 'Blue'} · {gift.pattern || 'Plain'}</div>
-                  <div className="ngps-price">Редкость: {formatGram(gift.rarity)}%</div>
+                  <div className="ngps-muted">{gift.model || 'Classic'}</div>
+                  <div className="ngps-muted">
+                    Фон: {gift.bg || 'Blue'} · Узор: {gift.pattern || 'Plain'}
+                  </div>
+                  <div className="ngps-price">Редкость: {formatNumber(gift.rarity)}%</div>
                   <div className="ngps-row">
-                    <button className="ngps-btn" type="button" disabled={busy || rouletteBusy} onClick={() => void upgradeGift(gift)}>
+                    <button className="ngps-btn" type="button" disabled={busy || rouletteBusy || stars < 300} onClick={() => void upgradeGift(gift)}>
                       Улучшить · 300 Stars
                     </button>
                     <button className="ngps-btn secondary" type="button" disabled={busy} onClick={() => void sellGift(gift)}>
@@ -768,59 +1039,92 @@ export default function NeoGramProfileShop() {
           </div>
 
           <div className="ngps-panel">
-            <h3>3D · рулетка улучшения подарка</h3>
-            <p className="ngps-muted">Три барабана показывают результат серверного улучшения. Стоимость и итог проверяются Worker, а не браузером.</p>
+            <h3>3D · рулетка улучшения</h3>
+            <p className="ngps-muted">
+              Три барабана показывают сохранённые Worker параметры: модель, фон и узор. Цена попытки — 300 Stars.
+            </p>
+
             <div className="ngps-field">
               <label>Подарок для улучшения</label>
               <select value={selectedGift} onChange={(event) => setSelectedGift(event.target.value)}>
                 <option value="">Выберите подарок</option>
                 {ownedGifts.map((gift) => (
-                  <option key={gift.gift_id} value={String(gift.gift_id)}>{gift.name} · #{gift.gift_id}</option>
+                  <option key={gift.gift_id} value={String(gift.gift_id)}>
+                    {gift.name} · #{gift.gift_id}
+                  </option>
                 ))}
               </select>
             </div>
-            <div className="ngps-reels">
-              <div className="ngps-reel">{rouletteBusy ? '✦ ✧ ✦' : rouletteResult?.model || 'MODEL'}</div>
-              <div className="ngps-reel">{rouletteBusy ? '◈ ◆ ◈' : rouletteResult?.bg || 'BACKGROUND'}</div>
-              <div className="ngps-reel">{rouletteBusy ? '✺ ✹ ✺' : rouletteResult?.pattern || 'PATTERN'}</div>
+
+            <div className={`ngps-reels ${rouletteBusy ? 'spinning' : ''}`}>
+              <div className="ngps-reel">
+                <span>MODEL</span>
+                <strong>{rouletteBusy ? '✦ ✧ ✦' : rouletteResult?.model || '—'}</strong>
+              </div>
+              <div className="ngps-reel">
+                <span>BACKGROUND</span>
+                <strong>{rouletteBusy ? '◈ ◆ ◈' : rouletteResult?.bg || '—'}</strong>
+              </div>
+              <div className="ngps-reel">
+                <span>PATTERN</span>
+                <strong>{rouletteBusy ? '✺ ✹ ✺' : rouletteResult?.pattern || '—'}</strong>
+              </div>
             </div>
+
             {rouletteResult && (
-              <div className="ngps-card">
+              <div className="ngps-card ngps-result-card">
                 <strong>{rouletteResult.name}</strong>
-                <div className="ngps-muted">Модель: {rouletteResult.model} · Фон: {rouletteResult.bg} · Узор: {rouletteResult.pattern}</div>
-                <div className="ngps-price">Редкость: {formatGram(rouletteResult.rarity)}%</div>
+                <div className="ngps-muted">
+                  {rouletteResult.model} · {rouletteResult.bg} · {rouletteResult.pattern}
+                </div>
+                <div className="ngps-price">
+                  Редкость: {formatNumber(rouletteResult.rarity)}%
+                </div>
               </div>
             )}
+
             <button
               className="ngps-btn"
               type="button"
-              disabled={busy || rouletteBusy || !selectedGift}
+              disabled={busy || rouletteBusy || !selectedGift || stars < 300}
               onClick={() => {
                 const gift = ownedGifts.find((item) => String(item.gift_id) === selectedGift);
                 if (gift) void upgradeGift(gift);
               }}
             >
-              {rouletteBusy ? 'Барабаны вращаются…' : 'Запустить 3D-улучшение'}
+              {rouletteBusy ? 'Барабаны вращаются…' : 'Запустить улучшение'}
             </button>
-            <p className="ngps-muted" style={{ marginTop: 10 }}>Worker выбирает модель, фон и узор на сервере. Доступные фоны в текущем коде: Blue, Purple, Gold, Black (Onyx), Rainbow; узоры: Plain, Stars, Geometric, Galaxy. Результат отображается после ответа сервера.</p>
+
+            <div className="ngps-backgrounds">
+              <span>Blue</span>
+              <span>Purple</span>
+              <span>Gold</span>
+              <span className="onyx">Black / Onyx</span>
+              <span>Rainbow</span>
+            </div>
+            <p className="ngps-muted">
+              Worker выбирает фон случайно из Blue, Purple, Gold, Black и Rainbow; узор — Plain, Stars, Geometric или Galaxy. Вариант Black соответствует Onyx.
+            </p>
           </div>
         </>
       )}
 
-      {!loading && user && tab === 'faq' && (
+      {tab === 'faq' && (
         <div className="ngps-panel">
           <h3>Частые вопросы</h3>
           {FAQ.map((item, index) => (
             <div className="ngps-faq" key={item.q}>
               <button type="button" onClick={() => setExpandedFaq(expandedFaq === index ? null : index)}>
-                {item.q}<span>{expandedFaq === index ? '−' : '+'}</span>
+                <span>{item.q}</span>
+                <b>{expandedFaq === index ? '−' : '+'}</b>
               </button>
               {expandedFaq === index && <p>{item.a}</p>}
             </div>
           ))}
-          <div className="ngps-card" style={{ marginTop: 14 }}>
+
+          <div className="ngps-card ngps-capabilities">
             <strong>Возможности NeoGram</strong>
-            <p className="ngps-muted">Нету</p>
+            <p>Нету</p>
           </div>
         </div>
       )}
@@ -829,3 +1133,410 @@ export default function NeoGramProfileShop() {
     </section>
   );
 }
+
+const styles = `
+.ngps-root {
+  --bg:#080d18;
+  --panel:#101a2b;
+  --panel2:#13233b;
+  --line:rgba(145,175,220,.17);
+  --text:#f3f7ff;
+  --muted:#91a1bb;
+  --blue:#168fff;
+  position:relative;
+  width:100%;
+  min-width:0;
+  padding:12px 12px calc(28px + env(safe-area-inset-bottom,0px));
+  color:var(--text);
+  font-family:inherit;
+}
+.ngps-root * {box-sizing:border-box;}
+.ngps-header {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  padding:15px 16px;
+  border:1px solid rgba(75,150,255,.2);
+  border-radius:17px;
+  background:linear-gradient(115deg,#112c50,#10182b 75%);
+  box-shadow:0 12px 35px rgba(0,0,0,.16);
+}
+.ngps-brand {font-size:17px;font-weight:950;letter-spacing:1.6px;}
+.ngps-header-sub {margin-top:4px;color:#83baff;font-size:9px;letter-spacing:1.1px;}
+.ngps-header-balance {text-align:right;}
+.ngps-header-balance strong {display:block;font-size:20px;}
+.ngps-header-balance span {color:var(--muted);font-size:9px;}
+.ngps-tabs {
+  display:flex;
+  gap:5px;
+  margin:12px 0;
+  padding:5px;
+  overflow-x:auto;
+  border:1px solid var(--line);
+  border-radius:13px;
+  background:#0b1423;
+  scrollbar-width:none;
+}
+.ngps-tabs button {
+  flex:1 0 auto;
+  min-height:38px;
+  padding:8px 12px;
+  border:1px solid transparent;
+  border-radius:9px;
+  background:transparent;
+  color:var(--muted);
+  font:inherit;
+  font-size:11px;
+  font-weight:800;
+  cursor:pointer;
+}
+.ngps-tabs button.active {
+  border-color:rgba(40,145,255,.3);
+  background:linear-gradient(120deg,rgba(0,132,255,.25),rgba(70,80,200,.16));
+  color:#fff;
+}
+.ngps-panel {
+  min-width:0;
+  margin:12px 0;
+  padding:15px;
+  border:1px solid var(--line);
+  border-radius:15px;
+  background:linear-gradient(145deg,rgba(18,31,51,.98),rgba(11,19,33,.98));
+  box-shadow:0 8px 24px rgba(0,0,0,.12);
+}
+.ngps-panel h3 {margin:0 0 9px;font-size:15px;font-weight:900;}
+.ngps-panel h4 {margin:13px 0 8px;font-size:12px;}
+.ngps-panel-heading {display:flex;align-items:center;justify-content:space-between;gap:10px;}
+.ngps-muted {color:var(--muted);font-size:11px;line-height:1.55;}
+.ngps-profile-layout {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;align-items:start;}
+.ngps-layout-picker {display:flex;flex-wrap:wrap;gap:5px;margin:12px 0;}
+.ngps-layout-picker button {
+  padding:7px 9px;
+  border:1px solid var(--line);
+  border-radius:8px;
+  background:#0c1728;
+  color:var(--muted);
+  font:inherit;
+  font-size:10px;
+}
+.ngps-layout-picker button.active {border-color:#168fff;color:#fff;background:rgba(22,143,255,.17);}
+.ngps-preview {
+  position:relative;
+  overflow:hidden;
+  border:1px solid rgba(85,150,240,.25);
+  border-radius:14px;
+  background:#0a1322;
+}
+.ngps-preview-discord {border-radius:18px;background:#232633;}
+.ngps-preview-twitter {border-radius:8px;background:#071522;}
+.ngps-preview-steam {border-radius:5px;background:#102234;}
+.ngps-banner {
+  height:95px;
+  background:
+    radial-gradient(circle at 75% 20%,rgba(0,183,255,.45),transparent 28%),
+    linear-gradient(115deg,#174a85,#172044 55%,#281b58);
+  background-size:cover;
+  background-position:center;
+}
+.ngps-preview-body {position:relative;padding:0 13px 15px;}
+.ngps-avatar {
+  display:grid;
+  place-items:center;
+  width:58px;
+  height:58px;
+  margin-top:-27px;
+  overflow:hidden;
+  border:3px solid #101a2b;
+  border-radius:19px;
+  background:linear-gradient(145deg,#168fff,#513ac4);
+  color:white;
+  font-size:25px;
+  font-weight:950;
+}
+.ngps-preview-discord .ngps-avatar {border-radius:50%;}
+.ngps-preview-twitter .ngps-avatar {border-radius:50%;}
+.ngps-preview-steam .ngps-avatar {border-radius:8px;}
+.ngps-avatar img {width:100%;height:100%;object-fit:cover;}
+.ngps-name {display:flex;flex-wrap:wrap;align-items:center;gap:7px;margin-top:8px;font-size:14px;font-weight:900;overflow-wrap:anywhere;}
+.ngps-dev-tag {
+  padding:3px 6px;
+  border:1px solid rgba(255,195,90,.45);
+  border-radius:6px;
+  background:rgba(255,178,60,.13);
+  color:#ffd27b;
+  font-size:9px;
+  letter-spacing:.5px;
+}
+.ngps-badges {display:flex;flex-wrap:wrap;gap:5px;margin-top:10px;}
+.ngps-badge {
+  display:inline-flex;
+  align-items:center;
+  padding:5px 8px;
+  border:1px solid rgba(110,165,255,.24);
+  border-radius:7px;
+  background:rgba(40,100,180,.14);
+  color:#bcd8ff;
+  font-size:9px;
+  font-weight:800;
+}
+.ngps-badge.creator {border-color:rgba(255,194,88,.35);background:rgba(255,177,55,.1);color:#ffd27b;}
+.ngps-badge.hold {border-color:rgba(255,173,85,.3);color:#ffbd80;}
+.ngps-badge.major {border-color:rgba(180,120,255,.35);color:#d1adff;}
+.ngps-badges-large {margin:13px 0;}
+.ngps-grid {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;}
+.ngps-preview-stats {margin-top:13px;}
+.ngps-card {
+  min-width:0;
+  padding:12px;
+  border:1px solid var(--line);
+  border-radius:11px;
+  background:rgba(255,255,255,.025);
+}
+.ngps-balance {font-size:18px;font-weight:950;overflow-wrap:anywhere;}
+.ngps-social-preview {display:grid;gap:5px;margin-top:12px;color:#b1c2dc;font-size:10px;overflow-wrap:anywhere;}
+.ngps-field {display:flex;flex-direction:column;gap:6px;margin:12px 0;}
+.ngps-field label {color:#b4c5dc;font-size:10px;font-weight:800;}
+.ngps-field input,.ngps-field select,.ngps-field textarea {
+  display:block;
+  width:100%;
+  min-width:0;
+  min-height:42px;
+  padding:10px 11px;
+  border:1px solid var(--line);
+  border-radius:9px;
+  outline:none;
+  background:#0a1424;
+  color:white;
+  font:inherit;
+  font-size:16px;
+}
+.ngps-field textarea {min-height:90px;resize:vertical;}
+.ngps-field input:focus,.ngps-field select:focus,.ngps-field textarea:focus {border-color:#168fff;box-shadow:0 0 0 2px rgba(22,143,255,.1);}
+.ngps-btn {
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:6px;
+  min-height:39px;
+  padding:9px 13px;
+  border:1px solid transparent;
+  border-radius:9px;
+  background:linear-gradient(120deg,#087fff,#2545c4);
+  color:white;
+  font:inherit;
+  font-size:11px;
+  font-weight:850;
+  cursor:pointer;
+}
+.ngps-btn:disabled {opacity:.48;cursor:default;}
+.ngps-btn.secondary {border-color:var(--line);background:#172942;color:#dceaff;}
+.ngps-btn.small {min-width:34px;min-height:32px;padding:5px 9px;}
+.ngps-file-button {
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  min-height:42px;
+  padding:10px;
+  border:1px dashed rgba(65,155,255,.45);
+  border-radius:9px;
+  background:rgba(20,105,200,.1);
+  color:#c8e3ff;
+  font-size:11px;
+  font-weight:850;
+  cursor:pointer;
+}
+.ngps-file-button input {display:none;}
+.ngps-divider {height:1px;margin:16px 0;background:var(--line);}
+.ngps-creator-card {
+  display:flex;
+  gap:12px;
+  margin-top:13px;
+  padding:13px;
+  border:1px solid rgba(255,192,83,.25);
+  border-radius:12px;
+  background:linear-gradient(120deg,rgba(190,123,30,.12),rgba(255,255,255,.02));
+}
+.ngps-creator-card p {margin:5px 0;color:#d4c6a9;font-size:10px;line-height:1.5;}
+.ngps-creator-card .ngps-muted {color:var(--muted);}
+.ngps-creator-mark {
+  display:grid;
+  place-items:center;
+  flex:0 0 38px;
+  width:38px;
+  height:38px;
+  border-radius:12px;
+  background:rgba(255,183,64,.15);
+  color:#ffd27b;
+  font-size:22px;
+}
+.ngps-between {display:flex;align-items:center;justify-content:space-between;gap:10px;}
+.ngps-list-row {padding:10px 0;border-bottom:1px solid var(--line);}
+.ngps-list-row strong {font-size:11px;}
+.ngps-pill {
+  display:inline-flex;
+  align-items:center;
+  padding:5px 8px;
+  border:1px solid var(--line);
+  border-radius:20px;
+  background:rgba(255,255,255,.035);
+  color:#c9dcf5;
+  font-size:9px;
+  white-space:nowrap;
+}
+.ngps-wallet-grid {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;}
+.ngps-wallet-card {
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+  padding:15px;
+  border:1px solid rgba(40,150,255,.25);
+  border-radius:14px;
+  background:linear-gradient(140deg,#123b67,#10213b);
+}
+.ngps-wallet-card.stars {border-color:rgba(182,125,255,.25);background:linear-gradient(140deg,#34265f,#171c39);}
+.ngps-wallet-card span,.ngps-wallet-card small {color:#b0c5e1;font-size:10px;}
+.ngps-wallet-card strong {font-size:23px;overflow-wrap:anywhere;}
+.ngps-fee-line {display:flex;justify-content:space-between;gap:10px;margin:7px 0;color:var(--muted);font-size:10px;}
+.ngps-fee-line strong {color:#dceaff;}
+.ngps-search-result {margin-top:12px;}
+.ngps-price {margin:7px 0;color:#7dc5ff;font-size:12px;font-weight:900;}
+.ngps-market-row {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  padding:12px 0;
+  border-bottom:1px solid var(--line);
+}
+.ngps-market-info {display:flex;flex-direction:column;gap:4px;min-width:0;}
+.ngps-market-info strong {font-size:11px;overflow-wrap:anywhere;}
+.ngps-market-info span,.ngps-market-info small {color:var(--muted);font-size:9px;}
+.ngps-market-info b {color:#7dc5ff;font-size:12px;}
+.ngps-shop-card {display:flex;flex-direction:column;align-items:flex-start;gap:5px;}
+.ngps-icon {font-size:27px;}
+.ngps-frame-sample {
+  display:grid;
+  place-items:center;
+  width:48px;
+  height:48px;
+  border:3px solid #299cff;
+  border-radius:15px;
+  background:#0a1424;
+  font-size:22px;
+}
+.ngps-gift-3d {
+  display:grid;
+  place-items:center;
+  width:62px;
+  height:62px;
+  border:1px solid rgba(120,165,255,.25);
+  border-radius:16px;
+  background:radial-gradient(circle at 35% 20%,#2d4d7b,#080d18 72%);
+  box-shadow:inset 0 0 20px rgba(0,0,0,.7),0 8px 18px rgba(0,0,0,.2);
+  font-size:30px;
+}
+.ngps-gift-card {display:flex;flex-direction:column;gap:6px;}
+.ngps-row {display:flex;flex-wrap:wrap;gap:7px;margin-top:8px;}
+.ngps-reels {
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:7px;
+  margin:14px 0;
+  perspective:700px;
+}
+.ngps-reel {
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap:10px;
+  min-width:0;
+  min-height:105px;
+  padding:9px 5px;
+  overflow:hidden;
+  border:1px solid rgba(75,155,255,.32);
+  border-radius:12px;
+  background:linear-gradient(145deg,#132b4b,#070c16);
+  box-shadow:inset 0 0 20px rgba(0,0,0,.55),0 7px 16px rgba(0,0,0,.2);
+  text-align:center;
+}
+.ngps-reel span {color:#7795bd;font-size:8px;letter-spacing:.8px;}
+.ngps-reel strong {font-size:12px;overflow-wrap:anywhere;}
+.ngps-reels.spinning .ngps-reel {animation:ngps-spin .35s linear infinite;}
+.ngps-reels.spinning .ngps-reel:nth-child(2) {animation-delay:.06s;}
+.ngps-reels.spinning .ngps-reel:nth-child(3) {animation-delay:.12s;}
+@keyframes ngps-spin {
+  0% {transform:rotateX(0deg);filter:brightness(1);}
+  50% {transform:rotateX(180deg);filter:brightness(1.7);}
+  100% {transform:rotateX(360deg);filter:brightness(1);}
+}
+.ngps-result-card {margin:10px 0;border-color:rgba(75,165,255,.3);}
+.ngps-backgrounds {display:flex;flex-wrap:wrap;gap:6px;margin-top:13px;}
+.ngps-backgrounds span {
+  padding:5px 8px;
+  border:1px solid var(--line);
+  border-radius:7px;
+  background:#14223a;
+  color:#c7d8f0;
+  font-size:9px;
+}
+.ngps-backgrounds .onyx {border-color:#555;background:#030303;color:#eee;}
+.ngps-empty {
+  padding:17px;
+  border:1px dashed var(--line);
+  border-radius:10px;
+  color:var(--muted);
+  font-size:10px;
+  text-align:center;
+}
+.ngps-faq {border-bottom:1px solid var(--line);}
+.ngps-faq button {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  width:100%;
+  padding:13px 2px;
+  border:0;
+  background:transparent;
+  color:#e8f1ff;
+  font:inherit;
+  font-size:11px;
+  font-weight:800;
+  text-align:left;
+}
+.ngps-faq button b {color:#80bdff;font-size:17px;}
+.ngps-faq p {margin:0 0 13px;color:var(--muted);font-size:10px;line-height:1.6;}
+.ngps-capabilities {margin-top:15px;border-color:rgba(90,155,255,.2);}
+.ngps-capabilities p {margin:7px 0 0;color:#9eb5d4;font-size:11px;}
+.ngps-notice {
+  position:sticky;
+  z-index:20;
+  bottom:calc(10px + env(safe-area-inset-bottom,0px));
+  width:fit-content;
+  max-width:100%;
+  margin:12px auto 0;
+  padding:10px 13px;
+  border:1px solid rgba(65,155,255,.35);
+  border-radius:10px;
+  background:#10233e;
+  color:#edf6ff;
+  box-shadow:0 8px 24px rgba(0,0,0,.35);
+  font-size:10px;
+  line-height:1.45;
+  text-align:center;
+}
+.ngps-loading {padding:30px;text-align:center;color:var(--muted);font-size:12px;}
+@media(max-width:680px) {
+  .ngps-profile-layout {grid-template-columns:1fr;}
+  .ngps-panel {padding:13px;}
+}
+@media(max-width:360px) {
+  .ngps-root {padding-left:8px;padding-right:8px;}
+  .ngps-grid {gap:7px;}
+  .ngps-card {padding:9px;}
+  .ngps-reel {min-height:92px;}
+  .ngps-reel strong {font-size:10px;}
+}
+`;
