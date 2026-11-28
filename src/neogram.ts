@@ -1,6 +1,5 @@
 
-import React from 'react';
-import { createRoot, type Root } from 'react-dom/client';
+import TeactDOM from './lib/teact/teact-dom';
 
 import NeoGramShell from './neogram/NeoGramShell';
 import {
@@ -12,22 +11,19 @@ import './styles/neogram.scss';
 
 const WORKER_URL = 'https://tg-api.matveyverus9.workers.dev';
 
-let reactRoot: Root | undefined;
 let mountElement: HTMLElement | undefined;
 let currentProfile: NeoGramUser | null = null;
 let profileRequestId = 0;
 let mounted = false;
 
-function isCreatorAccount(
-  profile: NeoGramUser | null,
-): boolean {
+function isCreatorAccount(profile: NeoGramUser | null): boolean {
   return profile?.is_creator === 1;
 }
 
 function renderNeoGram(): void {
-  if (!reactRoot) return;
+  if (!mountElement) return;
 
-  reactRoot.render(
+  TeactDOM.render(
     <NeoGramShell
       isCreator={isCreatorAccount(currentProfile)}
       adminApiBase={WORKER_URL}
@@ -40,6 +36,7 @@ function renderNeoGram(): void {
         );
       }}
     />,
+    mountElement,
   );
 }
 
@@ -100,13 +97,11 @@ export function mountNeoGram(): void {
   mounted = true;
   mountElement = createMountElement();
 
-  reactRoot = createRoot(mountElement);
-
   renderNeoGram();
 
   void refreshProfile();
 
-  console.info('[NeoGram] React shell mounted.');
+  console.info('[NeoGram] Teact shell mounted.');
 }
 
 function handleAuthenticated(): void {
